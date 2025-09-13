@@ -1,0 +1,12 @@
+# Ignore everything by default
+/*
+
+# But allow these folders
+!/mp1_skeleton/
+!/.gitignore
+
+# Inside mp1_skeleton, ignore build artifacts
+/mp1_skeleton/build/
+/mp1_skeleton/*.o
+/mp1_skeleton/*.exe
+/mp1_skeleton/*.out
