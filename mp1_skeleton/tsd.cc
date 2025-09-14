@@ -81,17 +81,28 @@ struct Client {
 //Vector that stores every client that has been created
 std::vector<Client*> client_db;
 
+bool isInVector(const std::vector<Client*>& v, const Client* who) {
+  return std::find(v.begin(), v.end(), who) != v.end();
+}
+
+
+template <class T>
+void eraseFromVector(std::vector<T*>& v, T* x) {
+  v.erase(std::remove(v.begin(), v.end(), x), v.end());
+}
+
+Client* findClientByName(const std::string& uname) {
+    for (auto* c : client_db) {
+        if (c->username == uname) {
+            return c;   // found
+        }
+    }
+    return nullptr;     // not found
+}
+
 
 class SNSServiceImpl final : public SNSService::Service {
-  // helper function to find a client
-  Client* findClientByName(const std::string& uname) {
-      for (auto* c : client_db) {
-          if (c->username == uname) {
-              return c;   // found
-          }
-      }
-      return nullptr;     // not found
-  }
+
 
   
   Status List(ServerContext* context, const Request* request, ListReply* list_reply) override {
@@ -114,30 +125,58 @@ class SNSServiceImpl final : public SNSService::Service {
   Status Follow(ServerContext* context, const Request* request, Reply* reply) override {
 
     std::string uname = request -> username();
-    std::string uname2 = request -> arguments(0);
-    // A person can't follow himself
-    if (uname == uname2) {
+    std::string target = request -> arguments(0);
+    // Failure: A person can't follow himself
+    if (uname == target) {
       reply -> set_msg("Already joined");
+      return Status::OK; 
     }
-    else {
-      // TODO: handle duplicate login case
-      Client* c1 = findClientByName(uname);
-      Client* c2 = findClientByName(uname2);
-      if (c1 != nullptr && c2 != nullptr){
-        c1 -> client_following.push_back(c2);
-        c2 -> client_followers.push_back(c1);
-      }
-      reply -> set_msg("Follow successful");
+
+    // Failure: A person can't follow non-existent person
+    if (findClientByName(target) == nullptr){
+      reply -> set_msg("Following non-existent user.");
+      return Status::OK;
     }
+
+    // TODO: handle duplicate push cade
+    Client* c1 = findClientByName(uname);
+    Client* c2 = findClientByName(target);
+    if (c1 != nullptr && c2 != nullptr){
+      c1 -> client_following.push_back(c2);
+      c2 -> client_followers.push_back(c1);
+    }
+    reply -> set_msg("Follow successful");
+
 
     return Status::OK; 
   }
 
   Status UnFollow(ServerContext* context, const Request* request, Reply* reply) override {
 
-    /*********
-    YOUR CODE HERE
-    **********/
+    // fetch the username and the argument
+    std::string uname = request -> username();
+    const std::string target = request->arguments(0);
+    if (uname == target){
+      reply -> set_msg("You Can't unfollow yourself.");
+    }
+
+
+    // c1 follows c2 -> c2 follower [c1]; c1 following [c2] 
+    Client* c1 = findClientByName(uname);
+    Client* c2 = findClientByName(target);
+
+    if (!c1) { reply->set_msg("Requester does not exist."); return Status::OK; }
+    if (!c2) { reply->set_msg("Target user does not exist."); return Status::OK; }
+    const bool relation_exists = isInVector(c1->client_following, c2) && isInVector(c2->client_followers, c1);
+    if (relation_exists){
+      reply -> set_msg("You are not a follower.");
+    }
+
+    eraseFromVector(c1->client_following, c2);
+    eraseFromVector(c2->client_followers, c1);
+
+    reply->set_msg("Unfollow successful.");
+          
 
     return Status::OK;
   }
@@ -166,10 +205,20 @@ class SNSServiceImpl final : public SNSService::Service {
 
   Status Timeline(ServerContext* context, 
 		ServerReaderWriter<Message, Message>* stream) override {
+    Message first_in;
+    if (!stream -> Read(&first_in)){
+      return Status::OK;
+    }
 
-    /*********
-    YOUR CODE HERE
-    **********/
+    const std::string u1 = first_in.username();
+    if (u1.empty()){
+      return Status::OK;
+    }
+
+    std::cout << "user posted" << u1 << std::endl;
+
+
+
     
     return Status::OK;
   }

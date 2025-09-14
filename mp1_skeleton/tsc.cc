@@ -228,14 +228,13 @@ IReply Client::Follow(const std::string& username2) {
     ClientContext ctx;
     Status s = stub_ -> Follow(&ctx, req, &rep);
     ire.grpc_status = s;
-    if (rep.msg() == "Already joined"){
-      // follow failed
-      ire.comm_status = FAILURE_INVALID_USERNAME;
-      
-    }
-    else if (rep.msg() == "Follow successful"){
+
+    if (rep.msg() == "Follow successful"){
       // follow successful
       ire.comm_status = SUCCESS;
+    }
+    else {
+      ire.comm_status = FAILURE_INVALID_USERNAME;
     }
 
 
@@ -253,12 +252,14 @@ IReply Client::UnFollow(const std::string& username2) {
     Reply rep;
     ClientContext ctx;
     Status s = stub_ -> UnFollow(&ctx, req, &rep);
-
-    if (reply.msg() == "Not a follower."){
-      // unfollow failed
-    }
-    else if (reply.msg() == "Unfollow successful"){
+    ire.grpc_status = s;
+    if (rep.msg() == "Unfollow successful"){
       // unfollowed succeeded
+      ire.comm_status = SUCCESS;
+    }
+    else {
+      // the unfollow failed!
+      ire.comm_status =FAILURE_INVALID_USERNAME;
     }
 
 
@@ -313,6 +314,50 @@ void Client::Timeline(const std::string& username) {
     /***
     YOUR CODE HERE
     ***/
+
+    std::cout << "Now you are in timeline mode!" << std::endl;
+    ClientContext ctx;
+    std::unique_ptr<grpc::ClientReaderWriter<Message, Message>> stream(stub_->Timeline(&ctx));
+    Message msg;
+    msg.set_username(username);
+
+    // initialize the first message
+    Message hello;
+    hello.set_username(username);
+    stream->Write(hello);
+
+    std::atomic<bool> done{false};
+
+    std::thread writer([&]{
+      while (!done.load()){
+        std::string text = getPostMessage();
+        if (text.empty()) continue;
+
+        Message out = MakeMessage(username, text);
+        if (!stream->Write(out)) {
+            break; // server closed
+        }
+      }
+      stream->WritesDone();
+    });
+
+
+    std::thread reader([&] {
+      Message in;
+        // When the server closes the stream, Read() returns falsethread 
+        while (stream->Read(&in)) {
+            std::time_t tt = static_cast<std::time_t>(in.timestamp().seconds());
+            displayPostMessage(in.username(), in.msg(), tt);
+        }
+        // if the server disconnects, the reader threads sets done = true, but the
+        // writer thread might still be stuck inside getPostMessage()
+        done.store(true);
+    });
+
+    reader.join();
+    writer.join();
+
+    grpc::Status s = stream->Finish();
 
 }
 
