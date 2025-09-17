@@ -30,7 +30,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
-
+#include <chrono>
 #include <ctime>
 
 #include <google/protobuf/timestamp.pb.h>
@@ -100,6 +100,56 @@ Client* findClientByName(const std::string& uname) {
     return nullptr;     // not found
 }
 
+std::string format_file_output(const google::protobuf::Timestamp& ts,
+                              const std::string& username,
+                              const Message& m){
+    // convert timestamp in google protbuf format to std::time_t
+    std::time_t tt = static_cast<std::time_t>(ts.seconds());
+    char buf[64];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&tt));
+
+    /*Format:
+      T 2009-06-01 00:00:00
+      U http://twitter.com/testuser
+      W Post content
+      Empty line
+    */
+    std::ostringstream oss;
+    oss << "T " << buf << "\n";
+    oss << "U " << username << "\n";
+    oss << "W " << m.msg() << "\n";
+    return oss.str();
+
+} 
+
+bool append_to_file(std::string filename, std::string content){
+    std::ofstream out(filename, std::ios::app);  // `app` = append
+    if (!out) {
+        return false;
+    }
+    out << content << "\n";  // write a line and newline
+    return true;
+}
+
+google::protobuf::Timestamp createTimeStamp() {
+    google::protobuf::Timestamp ts;
+
+    auto now = std::chrono::system_clock::now();
+    auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(now);
+    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now - seconds);
+
+    ts.set_seconds(seconds.time_since_epoch().count());
+    ts.set_nanos(nanos.count());
+    return ts;
+}
+
+void printTimestamp(const google::protobuf::Timestamp& ts) {
+    std::time_t t = ts.seconds();
+    char buffer[30];
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", std::gmtime(&t));
+    std::cout << buffer << "." << ts.nanos() << " UTC\n";
+}
+
 
 class SNSServiceImpl final : public SNSService::Service {
 
@@ -128,7 +178,7 @@ class SNSServiceImpl final : public SNSService::Service {
     std::string target = request -> arguments(0);
     // Failure: A person can't follow himself
     if (uname == target) {
-      reply -> set_msg("Already joined");
+      reply -> set_msg("A person can't follow himself");
       return Status::OK; 
     }
 
@@ -145,7 +195,16 @@ class SNSServiceImpl final : public SNSService::Service {
       c1 -> client_following.push_back(c2);
       c2 -> client_followers.push_back(c1);
     }
+
+    // track the time c1 starts following c2.
+
+    std::cout << "DEBUG: about to print timestamp\n";
+    google::protobuf::Timestamp ts = createTimeStamp();
+    printTimestamp(ts);
+
+
     reply -> set_msg("Follow successful");
+
 
 
     return Status::OK; 
@@ -205,17 +264,31 @@ class SNSServiceImpl final : public SNSService::Service {
 
   Status Timeline(ServerContext* context, 
 		ServerReaderWriter<Message, Message>* stream) override {
-    Message first_in;
-    if (!stream -> Read(&first_in)){
-      return Status::OK;
-    }
+    // Message first_in;
+    // if (!stream -> Read(&first_in)){
+    //   return Status::OK;
+    // }
 
-    const std::string u1 = first_in.username();
-    if (u1.empty()){
-      return Status::OK;
-    }
+    // const std::string u1 = first_in.username();
+    // if (u1.empty()){
+    //   return Status::OK;
+    // }
 
-    std::cout << "user posted" << u1 << std::endl;
+    // std::cout << "user posted" << u1 << std::endl;
+
+    // read the rest of the message
+    Message m;
+    while (stream -> Read(&m)){
+      std::string uname = m.username();
+      Client* c = findClientByName(uname);
+      c -> stream = stream; // initialize stream
+      /* std::string format_file_output(const google.protobuf.Timestamp& ts,
+                              const std::string& username,
+                              const Message& m) */
+      // std::string file_output = format_file_output();
+      // file_append(u + ".txt", file_output);
+
+    }
 
 
 

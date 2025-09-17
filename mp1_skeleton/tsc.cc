@@ -318,13 +318,13 @@ void Client::Timeline(const std::string& username) {
     std::cout << "Now you are in timeline mode!" << std::endl;
     ClientContext ctx;
     std::unique_ptr<grpc::ClientReaderWriter<Message, Message>> stream(stub_->Timeline(&ctx));
-    Message msg;
-    msg.set_username(username);
+    // Message msg;
+    // msg.set_username(username);
 
-    // initialize the first message
-    Message hello;
-    hello.set_username(username);
-    stream->Write(hello);
+    // // initialize the first message
+    // Message hello;
+    // hello.set_username(username);
+    // stream->Write(hello);
 
     std::atomic<bool> done{false};
 
@@ -332,9 +332,9 @@ void Client::Timeline(const std::string& username) {
       while (!done.load()){
         std::string text = getPostMessage();
         if (text.empty()) continue;
-
-        Message out = MakeMessage(username, text);
-        if (!stream->Write(out)) {
+        // in tsc.cc
+        Message msg = MakeMessage(username, text);
+        if (!stream->Write(msg)) {
             break; // server closed
         }
       }
@@ -344,8 +344,9 @@ void Client::Timeline(const std::string& username) {
 
     std::thread reader([&] {
       Message in;
-        // When the server closes the stream, Read() returns falsethread 
+        // when the server closes the stream, Read() returns falsethread 
         while (stream->Read(&in)) {
+            // in client.cc
             std::time_t tt = static_cast<std::time_t>(in.timestamp().seconds());
             displayPostMessage(in.username(), in.msg(), tt);
         }
