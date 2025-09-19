@@ -158,7 +158,7 @@ IReply Client::processCommand(std::string& input)
     }
 
     std::string action = tokens[0];
-    if (action == "FOLLOW"){ // TODO: handle the case where tokens > 2?
+    if (action == "FOLLOW"){ 
       ire = Follow(tokens[1]);
     }
     else if (action == "UNFOLLOW"){
@@ -268,7 +268,7 @@ IReply Client::UnFollow(const std::string& username2) {
 
 // Login Command  
 IReply Client::Login() {
-    std::cout << "entered here" << std::endl;
+    // std::cout << "entered here" << std::endl;
     IReply ire;
   
     Request req;
@@ -315,7 +315,7 @@ void Client::Timeline(const std::string& username) {
     YOUR CODE HERE
     ***/
 
-    std::cout << "Now you are in timeline mode!" << std::endl;
+    //std::cout << "Now you are in timeline mode!" << std::endl;
     ClientContext ctx;
     std::unique_ptr<grpc::ClientReaderWriter<Message, Message>> stream(stub_->Timeline(&ctx));
     

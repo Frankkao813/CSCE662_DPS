@@ -238,7 +238,7 @@ bool on_receiving_message(const Message& m, Client* c) {
 
 
 
-
+// TODO: may not be necessary in this assignment
 google::protobuf::Timestamp createTimeStamp() {
     google::protobuf::Timestamp ts;
 
@@ -299,16 +299,28 @@ class SNSServiceImpl final : public SNSService::Service {
     // TODO: handle duplicate push cade
     Client* c1 = findClientByName(uname);
     Client* c2 = findClientByName(target);
+    // bool isInVector(const std::vector<Client*>& v, const Client* who)
     if (c1 != nullptr && c2 != nullptr){
-      c1 -> client_following.push_back(c2);
-      c2 -> client_followers.push_back(c1);
+        // both should be false
+        bool c1_in_c2_follower = isInVector(c2 -> client_followers, c1); 
+        bool c2_in_c1_following = isInVector(c1 -> client_following, c2);
+        std::cout << "c1_in_c2_follower: " << c1_in_c2_follower << std::endl;
+        std::cout << "c2_in_c1_follower: " << c2_in_c1_following << std::endl;
+        if (!c1_in_c2_follower && !c2_in_c1_following){
+          c1 -> client_following.push_back(c2);
+          c2 -> client_followers.push_back(c1);
+        }
+        else {
+          std::cout <<"already followed!" << std::endl;
+          reply ->set_msg("Already followed.");
+          return Status::OK;
+        }
     }
 
     // track the time c1 starts following c2.
-
-    std::cout << "DEBUG: about to print timestamp\n";
-    google::protobuf::Timestamp ts = createTimeStamp();
-    printTimestamp(ts);
+    // std::cout << "DEBUG: about to print timestamp\n";
+    // google::protobuf::Timestamp ts = createTimeStamp();
+    // printTimestamp(ts);
 
 
     reply -> set_msg("Follow successful");
