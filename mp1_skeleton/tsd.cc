@@ -205,7 +205,12 @@ std::vector<Message> recent_20_messages(std::string username){
     messages.push_back(m);
   }
 
-  return messages;
+  // I reverse the array and then take the last 20
+  std::reverse(messages.begin(), messages.end());
+  // take into account the number of messages in the vector
+  int num_consider = std::min<size_t>(20, messages.size());
+  std::vector<Message> newest_20_messages(messages.begin(), messages.begin() + num_consider);
+  return newest_20_messages;
 
 }
 
