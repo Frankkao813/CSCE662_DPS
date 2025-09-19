@@ -33,6 +33,7 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>  // C++17
+#include <regex>
 
 #include <google/protobuf/timestamp.pb.h>
 #include <google/protobuf/duration.pb.h>
@@ -123,6 +124,24 @@ std::string format_file_output(const google::protobuf::Timestamp& ts,
 
 } 
 
+// timstamp utility function
+google::protobuf::Timestamp toProtoTimestamp(const std::string& datetime) {
+    std::tm tm{};
+    std::istringstream ss(datetime);
+    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+    if (ss.fail()) {
+        throw std::runtime_error("Failed to parse datetime: " + datetime);
+    }
+
+    // Convert to time_t (seconds since epoch, UTC)
+    time_t t = timegm(&tm);  // use gmtime semantics (non-standard but available on GNU/libc)
+
+    google::protobuf::Timestamp ts;
+    ts.set_seconds(static_cast<int64_t>(t));
+    ts.set_nanos(0);  // no fractional seconds in your input
+    return ts;
+}
+
 bool append_to_file(const std::string& filename, const std::string& content) {
     std::string folder = "user";
     std::filesystem::create_directories(folder);  // make sure "user" exists
@@ -139,8 +158,55 @@ bool append_to_file(const std::string& filename, const std::string& content) {
 }
 
 //TODO: implement this function
-std::string recent_20_messages(){
-  return "";
+std::vector<Message> recent_20_messages(std::string username){
+  std::string folder = "user";
+  std::string filename = username + "_following.txt";
+  std::string full_path = folder + "/" + filename;
+  std::ifstream input_file(full_path);
+  // if there is no file related to this path
+  if (!input_file.is_open()){
+    return {};
+  }
+  std::cout << "start to read from the file " << full_path << std::endl;
+
+  // split the post into blocks
+  std::stringstream buffer;
+  buffer << input_file.rdbuf();   // read entire file
+  std::string content = buffer.str();
+
+  // strip the file into post sections
+  std::regex re("\\n\\n"); // split on double newlines
+  std::sregex_token_iterator it(content.begin(), content.end(), re, -1);
+  std::sregex_token_iterator end;
+  std::vector<std::string> paragraphs(it, end);
+  std::vector<Message> messages;
+  for (auto paragraph: paragraphs){
+    // parse the type 
+    std::stringstream pg(paragraph);
+    std::string tag;
+    Message m;
+    while (pg >> tag) {
+        if (tag == "T") {
+            std::string date, time;
+            pg >> date >> time;
+            // convert the datetime to google protobuffer format
+            google::protobuf::Timestamp ts  = toProtoTimestamp(date + " " + time);
+            *m.mutable_timestamp() = ts; 
+        } else if (tag == "U") {
+            std::string temp_username;
+            pg >> temp_username;
+            m.set_username(temp_username);
+        } else if (tag == "W") {
+          std::string temp_msg;
+          pg >> temp_msg;
+          m.set_msg(temp_msg);
+        }
+    }
+    messages.push_back(m);
+  }
+
+  return messages;
+
 }
 
 bool on_receiving_message(const Message& m, Client* c) {
@@ -164,6 +230,9 @@ bool on_receiving_message(const Message& m, Client* c) {
     }
     return ok;
 }
+
+
+
 
 google::protobuf::Timestamp createTimeStamp() {
     google::protobuf::Timestamp ts;
@@ -307,6 +376,11 @@ class SNSServiceImpl final : public SNSService::Service {
     Client* c1 = findClientByName(uname);
     c1 -> stream = stream;
     // TODO: when the person enters timeline, push the recent 20 messages from who he is following to him
+    std::vector<Message> recent_msgs = recent_20_messages(uname);
+    // push the result back to people
+    for (auto msg:recent_msgs){
+      c1 -> stream -> Write(msg);
+    }
 
 
     // read the rest of the message
