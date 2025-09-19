@@ -318,13 +318,12 @@ void Client::Timeline(const std::string& username) {
     std::cout << "Now you are in timeline mode!" << std::endl;
     ClientContext ctx;
     std::unique_ptr<grpc::ClientReaderWriter<Message, Message>> stream(stub_->Timeline(&ctx));
-    // Message msg;
-    // msg.set_username(username);
+    
 
-    // // initialize the first message
-    // Message hello;
-    // hello.set_username(username);
-    // stream->Write(hello);
+    // initialize the first message
+    Message hello;
+    hello.set_username(username);
+    stream->Write(hello);
 
     std::atomic<bool> done{false};
 

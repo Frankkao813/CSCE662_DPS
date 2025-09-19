@@ -32,6 +32,7 @@
  */
 #include <chrono>
 #include <ctime>
+#include <filesystem>  // C++17
 
 #include <google/protobuf/timestamp.pb.h>
 #include <google/protobuf/duration.pb.h>
@@ -102,7 +103,7 @@ Client* findClientByName(const std::string& uname) {
 
 std::string format_file_output(const google::protobuf::Timestamp& ts,
                               const std::string& username,
-                              const Message& m){
+                              const std::string& m){
     // convert timestamp in google protbuf format to std::time_t
     std::time_t tt = static_cast<std::time_t>(ts.seconds());
     char buf[64];
@@ -117,18 +118,51 @@ std::string format_file_output(const google::protobuf::Timestamp& ts,
     std::ostringstream oss;
     oss << "T " << buf << "\n";
     oss << "U " << username << "\n";
-    oss << "W " << m.msg() << "\n";
+    oss << "W " << m << "\n";
     return oss.str();
 
 } 
 
-bool append_to_file(std::string filename, std::string content){
-    std::ofstream out(filename, std::ios::app);  // `app` = append
+bool append_to_file(const std::string& filename, const std::string& content) {
+    std::string folder = "user";
+    std::filesystem::create_directories(folder);  // make sure "user" exists
+
+    std::string full_path = folder + "/" + filename;
+    std::cout << "the full path to write is..." << full_path << std::endl;
+    std::ofstream out(full_path, std::ios::app);  // append mode
     if (!out) {
-        return false;
+        return false;  // failed to open file
     }
-    out << content << "\n";  // write a line and newline
+    
+    out << content;
     return true;
+}
+
+//TODO: implement this function
+std::string recent_20_messages(){
+  return "";
+}
+
+bool on_receiving_message(const Message& m, Client* c) {
+    if (!c) return false;
+    const std::string& username = m.username();  // or however you store it
+    const std::string post = format_file_output(m.timestamp(), username, m.msg());
+    bool ok = append_to_file(username + ".txt", post);
+    // loop through the follower of the particular user
+    for (Client* follower : c->client_followers) {
+        if (!follower) continue;
+        if (follower->stream) {
+            // Write expects a Message datatype
+            Message out;
+            google::protobuf::Timestamp ts = google::protobuf::util::TimeUtil::GetCurrentTime();
+            out.set_username(username);
+            out.set_msg(m.msg());
+            *out.mutable_timestamp() = ts; 
+            follower->stream->Write(out);
+        }
+        ok = append_to_file(follower->username + "_following.txt", post) && ok;
+    }
+    return ok;
 }
 
 google::protobuf::Timestamp createTimeStamp() {
@@ -264,17 +298,16 @@ class SNSServiceImpl final : public SNSService::Service {
 
   Status Timeline(ServerContext* context, 
 		ServerReaderWriter<Message, Message>* stream) override {
-    // Message first_in;
-    // if (!stream -> Read(&first_in)){
-    //   return Status::OK;
-    // }
+    Message first_in;
+    if (!stream -> Read(&first_in)){
+      return Status::OK;
+    }
 
-    // const std::string u1 = first_in.username();
-    // if (u1.empty()){
-    //   return Status::OK;
-    // }
+    const std::string uname = first_in.username();
+    Client* c1 = findClientByName(uname);
+    c1 -> stream = stream;
+    // TODO: when the person enters timeline, push the recent 20 messages from who he is following to him
 
-    // std::cout << "user posted" << u1 << std::endl;
 
     // read the rest of the message
     Message m;
@@ -285,8 +318,9 @@ class SNSServiceImpl final : public SNSService::Service {
       /* std::string format_file_output(const google.protobuf.Timestamp& ts,
                               const std::string& username,
                               const Message& m) */
-      // std::string file_output = format_file_output();
-      // file_append(u + ".txt", file_output);
+      on_receiving_message(m, c);
+
+      
 
     }
 
