@@ -86,7 +86,7 @@ int Client::connectTo()
 // YOUR CODE HERE
 //////////////////////////////////////////////////////////
   std::string server_addr = hostname + ":" + port;
-  std::cout << "conntecting to ..." << server_addr << std::endl;
+  // std::cout << "conntecting to ..." << server_addr << std::endl;
   auto channel = grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials());
   stub_ = SNSService::NewStub(channel);
   // call Login rpc
@@ -148,7 +148,7 @@ IReply Client::processCommand(std::string& input)
     IReply ire;
     
   
-    std::cout << "the input typed: " <<  input << std::endl;
+    // std::cout << "the input typed: " <<  input << std::endl;
     // The function should be able to parse the following four command (FOLLOW, UNFOLLOW, LIST, TIMELINE)
     std::istringstream iss(input);
     std::vector<std::string> tokens;
@@ -253,12 +253,13 @@ IReply Client::UnFollow(const std::string& username2) {
     ClientContext ctx;
     Status s = stub_ -> UnFollow(&ctx, req, &rep);
     ire.grpc_status = s;
-    if (rep.msg() == "Unfollow successful"){
+    if (rep.msg() == "Unfollow successful."){
       // unfollowed succeeded
       ire.comm_status = SUCCESS;
     }
     else {
       // the unfollow failed!
+      //std::cout << rep.msg() <<" ..............." << std::endl;
       ire.comm_status =FAILURE_INVALID_USERNAME;
     }
 

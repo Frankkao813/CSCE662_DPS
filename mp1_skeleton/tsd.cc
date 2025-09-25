@@ -304,8 +304,8 @@ class SNSServiceImpl final : public SNSService::Service {
         // both should be false
         bool c1_in_c2_follower = isInVector(c2 -> client_followers, c1); 
         bool c2_in_c1_following = isInVector(c1 -> client_following, c2);
-        std::cout << "c1_in_c2_follower: " << c1_in_c2_follower << std::endl;
-        std::cout << "c2_in_c1_follower: " << c2_in_c1_following << std::endl;
+        // std::cout << "c1_in_c2_follower: " << c1_in_c2_follower << std::endl;
+        // std::cout << "c2_in_c1_follower: " << c2_in_c1_following << std::endl;
         if (!c1_in_c2_follower && !c2_in_c1_following){
           c1 -> client_following.push_back(c2);
           c2 -> client_followers.push_back(c1);
@@ -337,6 +337,7 @@ class SNSServiceImpl final : public SNSService::Service {
     const std::string target = request->arguments(0);
     if (uname == target){
       reply -> set_msg("You Can't unfollow yourself.");
+      return Status::OK;
     }
 
 
@@ -347,8 +348,9 @@ class SNSServiceImpl final : public SNSService::Service {
     if (!c1) { reply->set_msg("Requester does not exist."); return Status::OK; }
     if (!c2) { reply->set_msg("Target user does not exist."); return Status::OK; }
     const bool relation_exists = isInVector(c1->client_following, c2) && isInVector(c2->client_followers, c1);
-    if (relation_exists){
+    if (!relation_exists){
       reply -> set_msg("You are not a follower.");
+      return Status::OK;
     }
 
     eraseFromVector(c1->client_following, c2);
@@ -363,7 +365,7 @@ class SNSServiceImpl final : public SNSService::Service {
   // RPC Login
   Status Login(ServerContext* context, const Request* request, Reply* reply) override {
 
-    std::cout << "Hello World!!" << std::endl;
+    //std::cout << "Hello World!!" << std::endl;
     std::string uname = request -> username();
     // check whether already logged in...
     for (auto* c: client_db){
