@@ -233,6 +233,9 @@ IReply Client::Follow(const std::string& username2) {
       // follow successful
       ire.comm_status = SUCCESS;
     }
+    else if (rep.msg() == "A person can't follow himself."){
+      ire.comm_status = FAILURE_ALREADY_EXISTS;
+    }
     else {
       ire.comm_status = FAILURE_INVALID_USERNAME;
     }

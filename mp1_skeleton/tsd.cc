@@ -147,7 +147,7 @@ bool append_to_file(const std::string& filename, const std::string& content) {
     std::filesystem::create_directories(folder);  // make sure "user" exists
 
     std::string full_path = folder + "/" + filename;
-    std::cout << "the full path to write is..." << full_path << std::endl;
+    // std::cout << "the full path to write is..." << full_path << std::endl;
     std::ofstream out(full_path, std::ios::app);  // append mode
     if (!out) {
         return false;  // failed to open file
@@ -167,7 +167,7 @@ std::vector<Message> recent_20_messages(std::string username){
   if (!input_file.is_open()){
     return {};
   }
-  std::cout << "start to read from the file " << full_path << std::endl;
+  //std::cout << "start to read from the file " << full_path << std::endl;
 
   // split the post into blocks
   std::stringstream buffer;
@@ -286,7 +286,7 @@ class SNSServiceImpl final : public SNSService::Service {
     std::string target = request -> arguments(0);
     // Failure: A person can't follow himself
     if (uname == target) {
-      reply -> set_msg("A person can't follow himself");
+      reply -> set_msg("A person can't follow himself.");
       return Status::OK; 
     }
 
@@ -296,11 +296,11 @@ class SNSServiceImpl final : public SNSService::Service {
       return Status::OK;
     }
 
-    // TODO: handle duplicate push cade
+    // handle duplicate push cade
     Client* c1 = findClientByName(uname);
     Client* c2 = findClientByName(target);
-    // bool isInVector(const std::vector<Client*>& v, const Client* who)
     if (c1 != nullptr && c2 != nullptr){
+        //  bool isInVector(const std::vector<Client*>& v, const Client* who)
         // both should be false
         bool c1_in_c2_follower = isInVector(c2 -> client_followers, c1); 
         bool c2_in_c1_following = isInVector(c1 -> client_following, c2);
@@ -311,16 +311,11 @@ class SNSServiceImpl final : public SNSService::Service {
           c2 -> client_followers.push_back(c1);
         }
         else {
-          std::cout <<"already followed!" << std::endl;
           reply ->set_msg("Already followed.");
           return Status::OK;
         }
     }
 
-    // track the time c1 starts following c2.
-    // std::cout << "DEBUG: about to print timestamp\n";
-    // google::protobuf::Timestamp ts = createTimeStamp();
-    // printTimestamp(ts);
 
 
     reply -> set_msg("Follow successful");
