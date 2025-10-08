@@ -3,6 +3,7 @@
 
 # But allow these folders
 !/mp1_skeleton/
+!/mp2-1_skeleton/
 !/.gitignore
 
 # Inside mp1_skeleton, ignore build artifacts

@@ -1,0 +1,462 @@
+/*
+ *
+ * Copyright 2015, Google Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are
+ * met:
+ *
+ *     * Redistributions of source code must retain the above copyright
+ * notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following disclaimer
+ * in the documentation and/or other materials provided with the
+ * distribution.
+ *     * Neither the name of Google Inc. nor the names of its
+ * contributors may be used to endorse or promote products derived from
+ * this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ */
+#include <chrono>
+#include <ctime>
+#include <filesystem>  // C++17
+#include <regex>
+
+#include <google/protobuf/timestamp.pb.h>
+#include <google/protobuf/duration.pb.h>
+
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <stdlib.h>
+#include <unistd.h>
+#include <google/protobuf/util/time_util.h>
+#include <grpc++/grpc++.h>
+#include<glog/logging.h>
+#define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity); 
+
+#include "sns.grpc.pb.h"
+
+
+using google::protobuf::Timestamp;
+using google::protobuf::Duration;
+using grpc::Server;
+using grpc::ServerBuilder;
+using grpc::ServerContext;
+using grpc::ServerReader;
+using grpc::ServerReaderWriter;
+using grpc::ServerWriter;
+using grpc::Status;
+using csce438::Message;
+using csce438::ListReply;
+using csce438::Request;
+using csce438::Reply;
+using csce438::SNSService;
+
+
+struct Client {
+  std::string username;
+  bool connected = true;
+  int following_file_size = 0;
+  std::vector<Client*> client_followers;
+  std::vector<Client*> client_following;
+  ServerReaderWriter<Message, Message>* stream = 0;
+  bool operator==(const Client& c1) const{
+    return (username == c1.username);
+  }
+};
+
+//Vector that stores every client that has been created
+std::vector<Client*> client_db;
+
+bool isInVector(const std::vector<Client*>& v, const Client* who) {
+  return std::find(v.begin(), v.end(), who) != v.end();
+}
+
+
+template <class T>
+void eraseFromVector(std::vector<T*>& v, T* x) {
+  v.erase(std::remove(v.begin(), v.end(), x), v.end());
+}
+
+Client* findClientByName(const std::string& uname) {
+    for (auto* c : client_db) {
+        if (c->username == uname) {
+            return c;   // found
+        }
+    }
+    return nullptr;     // not found
+}
+
+std::string format_file_output(const google::protobuf::Timestamp& ts,
+                              const std::string& username,
+                              const std::string& m){
+    // convert timestamp in google protbuf format to std::time_t
+    std::time_t tt = static_cast<std::time_t>(ts.seconds());
+    char buf[64];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&tt));
+
+    /*Format:
+      T 2009-06-01 00:00:00
+      U http://twitter.com/testuser
+      W Post content
+      Empty line
+    */
+    std::ostringstream oss;
+    oss << "T " << buf << "\n";
+    oss << "U " << username << "\n";
+    oss << "W " << m << "\n";
+    return oss.str();
+
+} 
+
+// timstamp utility function
+google::protobuf::Timestamp toProtoTimestamp(const std::string& datetime) {
+    std::tm tm{};
+    std::istringstream ss(datetime);
+    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+    if (ss.fail()) {
+        throw std::runtime_error("Failed to parse datetime: " + datetime);
+    }
+
+    // Convert to time_t (seconds since epoch, UTC)
+    time_t t = timegm(&tm);  // use gmtime semantics (non-standard but available on GNU/libc)
+
+    google::protobuf::Timestamp ts;
+    ts.set_seconds(static_cast<int64_t>(t));
+    ts.set_nanos(0);  // no fractional seconds in your input
+    return ts;
+}
+
+bool append_to_file(const std::string& filename, const std::string& content) {
+    std::string folder = "user";
+    std::filesystem::create_directories(folder);  // make sure "user" exists
+
+    std::string full_path = folder + "/" + filename;
+    // std::cout << "the full path to write is..." << full_path << std::endl;
+    std::ofstream out(full_path, std::ios::app);  // append mode
+    if (!out) {
+        return false;  // failed to open file
+    }
+    
+    out << content;
+    return true;
+}
+
+//TODO: implement this function
+std::vector<Message> recent_20_messages(std::string username){
+  std::string folder = "user";
+  std::string filename = username + "_following.txt";
+  std::string full_path = folder + "/" + filename;
+  std::ifstream input_file(full_path);
+  // if there is no file related to this path
+  if (!input_file.is_open()){
+    return {};
+  }
+  //std::cout << "start to read from the file " << full_path << std::endl;
+
+  // split the post into blocks
+  std::stringstream buffer;
+  buffer << input_file.rdbuf();   // read entire file
+  std::string content = buffer.str();
+
+  // strip the file into post sections
+  std::regex re("\\n\\n"); // split on double newlines
+  std::sregex_token_iterator it(content.begin(), content.end(), re, -1);
+  std::sregex_token_iterator end;
+  std::vector<std::string> paragraphs(it, end);
+  std::vector<Message> messages;
+  for (auto paragraph: paragraphs){
+    // parse the type 
+    std::stringstream pg(paragraph);
+    std::string tag;
+    Message m;
+    while (pg >> tag) {
+        if (tag == "T") {
+            std::string date, time;
+            pg >> date >> time;
+            // convert the datetime to google protobuffer format
+            google::protobuf::Timestamp ts  = toProtoTimestamp(date + " " + time);
+            *m.mutable_timestamp() = ts; 
+        } else if (tag == "U") {
+            std::string temp_username;
+            pg >> temp_username;
+            m.set_username(temp_username);
+        } else if (tag == "W") {
+          std::string temp_msg;
+          pg >> temp_msg;
+          m.set_msg(temp_msg);
+        }
+    }
+    messages.push_back(m);
+  }
+
+  // I reverse the array and then take the last 20
+  std::reverse(messages.begin(), messages.end());
+  // take into account the number of messages in the vector
+  int num_consider = std::min<size_t>(20, messages.size());
+  std::vector<Message> newest_20_messages(messages.begin(), messages.begin() + num_consider);
+  return newest_20_messages;
+
+}
+
+bool on_receiving_message(const Message& m, Client* c) {
+    if (!c) return false;
+    const std::string& username = m.username();  // or however you store it
+    const std::string post = format_file_output(m.timestamp(), username, m.msg());
+    bool ok = append_to_file(username + ".txt", post);
+    // loop through the follower of the particular user
+    for (Client* follower : c->client_followers) {
+        if (!follower) continue;
+        if (follower->stream) {
+            // Write expects a Message datatype
+            Message out;
+            google::protobuf::Timestamp ts = google::protobuf::util::TimeUtil::GetCurrentTime();
+            out.set_username(username);
+            out.set_msg(m.msg());
+            *out.mutable_timestamp() = ts; 
+            follower->stream->Write(out);
+        }
+        ok = append_to_file(follower->username + "_following.txt", post) && ok;
+    }
+    return ok;
+}
+
+
+
+// TODO: may not be necessary in this assignment
+google::protobuf::Timestamp createTimeStamp() {
+    google::protobuf::Timestamp ts;
+
+    auto now = std::chrono::system_clock::now();
+    auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(now);
+    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now - seconds);
+
+    ts.set_seconds(seconds.time_since_epoch().count());
+    ts.set_nanos(nanos.count());
+    return ts;
+}
+
+void printTimestamp(const google::protobuf::Timestamp& ts) {
+    std::time_t t = ts.seconds();
+    char buffer[30];
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", std::gmtime(&t));
+    std::cout << buffer << "." << ts.nanos() << " UTC\n";
+}
+
+
+class SNSServiceImpl final : public SNSService::Service {
+
+
+  
+  Status List(ServerContext* context, const Request* request, ListReply* list_reply) override {
+    // request is from grpc protobuf message
+    std::string uname = request -> username();
+    for (Client* c : client_db){
+        list_reply -> add_all_users(c -> username);
+    }
+
+    Client* c = findClientByName(uname);
+    if (c != nullptr){
+        for (Client* cf: c -> client_followers){
+            list_reply -> add_followers(cf -> username);
+        }
+    }
+
+    return Status::OK;
+  }
+
+  Status Follow(ServerContext* context, const Request* request, Reply* reply) override {
+
+    std::string uname = request -> username();
+    std::string target = request -> arguments(0);
+    // Failure: A person can't follow himself
+    if (uname == target) {
+      reply -> set_msg("A person can't follow himself.");
+      return Status::OK; 
+    }
+
+    // Failure: A person can't follow non-existent person
+    if (findClientByName(target) == nullptr){
+      reply -> set_msg("Following non-existent user.");
+      return Status::OK;
+    }
+
+    // handle duplicate push cade
+    Client* c1 = findClientByName(uname);
+    Client* c2 = findClientByName(target);
+    if (c1 != nullptr && c2 != nullptr){
+        //  bool isInVector(const std::vector<Client*>& v, const Client* who)
+        // both should be false
+        bool c1_in_c2_follower = isInVector(c2 -> client_followers, c1); 
+        bool c2_in_c1_following = isInVector(c1 -> client_following, c2);
+        // std::cout << "c1_in_c2_follower: " << c1_in_c2_follower << std::endl;
+        // std::cout << "c2_in_c1_follower: " << c2_in_c1_following << std::endl;
+        if (!c1_in_c2_follower && !c2_in_c1_following){
+          c1 -> client_following.push_back(c2);
+          c2 -> client_followers.push_back(c1);
+        }
+        else {
+          reply ->set_msg("Already followed.");
+          return Status::OK;
+        }
+    }
+
+
+
+    reply -> set_msg("Follow successful");
+
+
+
+    return Status::OK; 
+  }
+
+  Status UnFollow(ServerContext* context, const Request* request, Reply* reply) override {
+
+    // fetch the username and the argument
+    std::string uname = request -> username();
+    const std::string target = request->arguments(0);
+    if (uname == target){
+      reply -> set_msg("You Can't unfollow yourself.");
+      return Status::OK;
+    }
+
+
+    // c1 follows c2 -> c2 follower [c1]; c1 following [c2] 
+    Client* c1 = findClientByName(uname);
+    Client* c2 = findClientByName(target);
+
+    if (!c1) { reply->set_msg("Requester does not exist."); return Status::OK; }
+    if (!c2) { reply->set_msg("Target user does not exist."); return Status::OK; }
+    const bool relation_exists = isInVector(c1->client_following, c2) && isInVector(c2->client_followers, c1);
+    if (!relation_exists){
+      reply -> set_msg("You are not a follower.");
+      return Status::OK;
+    }
+
+    eraseFromVector(c1->client_following, c2);
+    eraseFromVector(c2->client_followers, c1);
+
+    reply->set_msg("Unfollow successful.");
+          
+
+    return Status::OK;
+  }
+
+  // RPC Login
+  Status Login(ServerContext* context, const Request* request, Reply* reply) override {
+
+    //std::cout << "Hello World!!" << std::endl;
+    std::string uname = request -> username();
+    // check whether already logged in...
+    for (auto* c: client_db){
+      if (c -> username == uname && c -> connected){
+        reply -> set_msg("ALREADY_LOGGED_IN");
+        return Status::OK;
+      }
+    }
+
+    // not logged in
+    Client* newClient = new Client();
+    newClient -> username = uname;
+    client_db.push_back(newClient);
+    reply -> set_msg("SUCCESS");
+
+    return Status::OK;
+  }
+
+  Status Timeline(ServerContext* context, 
+		ServerReaderWriter<Message, Message>* stream) override {
+    Message first_in;
+    if (!stream -> Read(&first_in)){
+      return Status::OK;
+    }
+
+    const std::string uname = first_in.username();
+    Client* c1 = findClientByName(uname);
+    c1 -> stream = stream;
+    // TODO: when the person enters timeline, push the recent 20 messages from who he is following to him
+    std::vector<Message> recent_msgs = recent_20_messages(uname);
+    // push the result back to people
+    for (auto msg:recent_msgs){
+      c1 -> stream -> Write(msg);
+    }
+
+
+    // read the rest of the message
+    Message m;
+    while (stream -> Read(&m)){
+      std::string uname = m.username();
+      Client* c = findClientByName(uname);
+      c -> stream = stream; // initialize stream
+      /* std::string format_file_output(const google.protobuf.Timestamp& ts,
+                              const std::string& username,
+                              const Message& m) */
+      on_receiving_message(m, c);
+
+      
+
+    }
+
+
+
+    
+    return Status::OK;
+  }
+
+};
+
+void RunServer(std::string port_no) {
+  std::string server_address = "0.0.0.0:"+port_no;
+  SNSServiceImpl service;
+
+  ServerBuilder builder;
+  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+  builder.RegisterService(&service);
+  std::unique_ptr<Server> server(builder.BuildAndStart());
+  std::cout << "Server listening on " << server_address << std::endl;
+  log(INFO, "Server listening on "+server_address);
+
+  server->Wait();
+}
+
+
+
+
+int main(int argc, char** argv) {
+
+  std::string port = "3010";
+  
+  int opt = 0;
+  while ((opt = getopt(argc, argv, "p:")) != -1){
+    switch(opt) {
+      case 'p':
+          port = optarg;break;
+      default:
+	  std::cerr << "Invalid Command Line Argument\n";
+    }
+  }
+  
+  std::string log_file_name = std::string("server-") + port;
+  google::InitGoogleLogging(log_file_name.c_str());
+  log(INFO, "Logging Initialized. Server starting...");
+  RunServer(port);
+
+  return 0;
+}
+
+
