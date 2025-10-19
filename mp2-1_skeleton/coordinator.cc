@@ -90,6 +90,10 @@ class CoordServiceImpl final : public CoordService::Service {
     //hardcoded to represent this.
     Status GetServer(ServerContext* context, const ID* id, ServerInfo* serverinfo) override {
         // Your code here
+        std::cout<< "OKay!" << std::endl;
+
+        // link back to the serverinfo the send the message
+        
         return Status::OK;
     }
 

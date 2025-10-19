@@ -10,6 +10,9 @@
 #include <sstream>
 
 #include "sns.grpc.pb.h"
+
+#include "coordinator.grpc.pb.h" // newly added
+
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::ClientReader;
@@ -21,6 +24,9 @@ using csce438::ListReply;
 using csce438::Request;
 using csce438::Reply;
 using csce438::SNSService;
+using csce438::CoordService; // newly_added
+using csce438::ServerInfo; // new added
+using csce438::ID; // newly added
 
 void sig_ignore(int sig) {
   std::cout << "Signal caught " + sig;
@@ -60,6 +66,7 @@ private:
   // You can have an instance of the client stub
   // as a member variable.
   std::unique_ptr<SNSService::Stub> stub_;
+  std::unique_ptr<CoordService::Stub> coordinator_stub_; // new added
   
   IReply Login();
   IReply List();
@@ -85,17 +92,34 @@ int Client::connectTo()
 ///////////////////////////////////////////////////////////
 // YOUR CODE HERE
 //////////////////////////////////////////////////////////
-  std::string server_addr = hostname + ":" + port;
-  // std::cout << "conntecting to ..." << server_addr << std::endl;
-  auto channel = grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials());
-  stub_ = SNSService::NewStub(channel);
-  // call Login rpc
-  IReply ire = Login();
+  // This is the address to the coordinator
+  std::string coordinator_addr = hostname + ":" + "9090";
+  auto channel = grpc::CreateChannel(coordinator_addr, grpc::InsecureChannelCredentials());
+  coordinator_stub_ = CoordService::NewStub(channel);
+  // GetServer(ServerContext* context, const ID* id, ServerInfo* serverinfo) 
+  ID req_id;
+  req_id.set_id(1); // will be changed in the future
+  ClientContext ctx;
+  ServerInfo svInfo;
+  coordinator_stub_ -> GetServer(&ctx, req_id, &svInfo);
 
-  if (ire.comm_status ==  FAILURE_ALREADY_EXISTS){
-    return -1;
-  }
-  return 1;
+
+
+  // // This is the address to the server
+  // std::string server_addr = hostname + ":" + port;
+  // // std::cout << "conntecting to ..." << server_addr << std::endl;
+  // auto channel = grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials());
+  // stub_ = SNSService::NewStub(channel);
+
+
+
+  // // call Login rpc
+  // IReply ire = Login();
+
+  // if (ire.comm_status ==  FAILURE_ALREADY_EXISTS){
+  //   return -1;
+  // }
+  // return 1;
 }
 
 IReply Client::processCommand(std::string& input)
