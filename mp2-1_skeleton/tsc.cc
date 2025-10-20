@@ -49,8 +49,9 @@ class Client : public IClient
 public:
   Client(const std::string& hname,
 	 const std::string& uname,
-	 const std::string& p)
-    :hostname(hname), username(uname), port(p) {}
+	 const std::string& p,
+   const std::string& coordinatorPort)
+    :hostname(hname), username(uname), port(p), coordinatorPort(coordinatorPort) {}
 
   
 protected:
@@ -62,6 +63,8 @@ private:
   std::string hostname;
   std::string username;
   std::string port;
+  std::string coordinatorPort;
+  
   
   // You can have an instance of the client stub
   // as a member variable.
@@ -93,7 +96,7 @@ int Client::connectTo()
 // YOUR CODE HERE
 //////////////////////////////////////////////////////////
   // This is the address to the coordinator
-  std::string coordinator_addr = hostname + ":" + "9090";
+  std::string coordinator_addr = hostname + ":" + this -> coordinatorPort;
   auto channel = grpc::CreateChannel(coordinator_addr, grpc::InsecureChannelCredentials());
   coordinator_stub_ = CoordService::NewStub(channel);
   // GetServer(ServerContext* context, const ID* id, ServerInfo* serverinfo) 
@@ -102,6 +105,7 @@ int Client::connectTo()
   ClientContext ctx;
   ServerInfo svInfo;
   coordinator_stub_ -> GetServer(&ctx, req_id, &svInfo);
+  std::cout << "Success until here..." << std::endl;
 
 
 
@@ -399,9 +403,10 @@ int main(int argc, char** argv) {
   std::string hostname = "localhost";
   std::string username = "default";
   std::string port = "3010";
+  std::string coordinatorPort = "9090";
     
   int opt = 0;
-  while ((opt = getopt(argc, argv, "h:u:p:")) != -1){
+  while ((opt = getopt(argc, argv, "h:u:p:k:")) != -1){
     switch(opt) {
     case 'h':
       hostname = optarg;break;
@@ -409,14 +414,18 @@ int main(int argc, char** argv) {
       username = optarg;break;
     case 'p':
       port = optarg;break;
+    case 'k':
+      coordinatorPort = optarg;break;
     default:
       std::cout << "Invalid Command Line Argument\n";
     }
   }
+
+  std::cout << "hostname " << hostname << " " << "username " << username << " " << "port " << port << " " << "coordinatorPort " << " " <<  coordinatorPort <<std::endl;
       
   std::cout << "Logging Initialized. Client starting...";
   
-  Client myc(hostname, username, port);
+  Client myc(hostname, username, port, coordinatorPort);
   
   myc.run();
   

@@ -50,7 +50,11 @@
 #define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity); 
 
 #include "sns.grpc.pb.h"
+#include "coordinator.grpc.pb.h"
 
+using csce438::CoordService; // the stub to call heartbeat RPC
+using csce438::ServerInfo; // The message type containing server metadata
+using csce438::Confirmation; // The response message from the coordinator
 
 using google::protobuf::Timestamp;
 using google::protobuf::Duration;
@@ -79,6 +83,16 @@ struct Client {
     return (username == c1.username);
   }
 };
+
+// storing server configuration
+struct ServerConfig {
+    std::string port;
+    std::string clusterId;
+    std::string serverId;
+    std::string coordinatorIP;
+    std::string coordinatorPort;
+};
+
 
 //Vector that stores every client that has been created
 std::vector<Client*> client_db;
@@ -420,8 +434,8 @@ class SNSServiceImpl final : public SNSService::Service {
 
 };
 
-void RunServer(std::string port_no) {
-  std::string server_address = "0.0.0.0:"+port_no;
+void RunServer(const ServerConfig& config) {
+  std::string server_address = "0.0.0.0:"+ config.port;
   SNSServiceImpl service;
 
   ServerBuilder builder;
@@ -431,6 +445,9 @@ void RunServer(std::string port_no) {
   std::cout << "Server listening on " << server_address << std::endl;
   log(INFO, "Server listening on "+server_address);
 
+  // Register the server to the coordinator
+  
+
   server->Wait();
 }
 
@@ -438,23 +455,32 @@ void RunServer(std::string port_no) {
 
 
 int main(int argc, char** argv) {
+  ServerConfig config;
+  config.port = "3010";
 
-  std::string port = "3010";
-  
+
   int opt = 0;
-  while ((opt = getopt(argc, argv, "p:")) != -1){
+  while ((opt = getopt(argc, argv, "p:c:s:h:k:")) != -1){
     switch(opt) {
       case 'p':
-          port = optarg;break;
+          config.port = optarg;break;
+      case 'c':
+          config.clusterId = optarg;break;
+      case 's':
+          config.serverId = optarg;break;
+      case 'h':
+          config.coordinatorIP = optarg;break;
+      case 'k':
+          config.coordinatorPort = optarg;break;
       default:
 	  std::cerr << "Invalid Command Line Argument\n";
     }
   }
   
-  std::string log_file_name = std::string("server-") + port;
+  std::string log_file_name = std::string("server-") + config.port;
   google::InitGoogleLogging(log_file_name.c_str());
   log(INFO, "Logging Initialized. Server starting...");
-  RunServer(port);
+  RunServer(config);
 
   return 0;
 }
