@@ -47,6 +47,7 @@
 #include <google/protobuf/util/time_util.h>
 #include <grpc++/grpc++.h>
 #include<glog/logging.h>
+#include<thread>
 #define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity); 
 
 #include "sns.grpc.pb.h"
@@ -434,6 +435,46 @@ class SNSServiceImpl final : public SNSService::Service {
 
 };
 
+
+// send HeartBeat message
+void sendHeartbeat(const ServerConfig& config){
+    // Register the server to the coordinator
+  std::string coordinator_addr = config.coordinatorIP + ":" + config.coordinatorPort;
+  auto channel = grpc::CreateChannel(coordinator_addr, grpc::InsecureChannelCredentials());
+  std::unique_ptr<CoordService::Stub> coordinator_stub_; // new added
+  coordinator_stub_ = CoordService::NewStub(channel);
+
+  while (true){
+    /*
+      //server info message definition
+      message ServerInfo{
+          int32 serverID = 1;
+          string hostname = 2;
+          string port = 3;
+          string type = 4;
+      } 
+    */
+    ServerInfo server_info;
+    server_info.set_serverid(std::stoi(config.serverId));
+    server_info.set_hostname(config.coordinatorIP); // or get actual hostname
+    server_info.set_port(config.port);
+    server_info.set_type("master"); // or "slave" based on your logic
+
+    Confirmation confirmation;
+    grpc::ClientContext context;
+    grpc::Status status = coordinator_stub_->Heartbeat(&context, server_info, &confirmation);
+
+    if (!status.ok()){
+      log(ERROR, "Heartbeat failed: " + status.error_message());
+    }
+    else {
+      log(INFO, "heartbeat sent successfully");
+    }
+
+      std::this_thread::sleep_for(std::chrono::seconds(5));
+  }
+}
+
 void RunServer(const ServerConfig& config) {
   std::string server_address = "0.0.0.0:"+ config.port;
   SNSServiceImpl service;
@@ -445,13 +486,11 @@ void RunServer(const ServerConfig& config) {
   std::cout << "Server listening on " << server_address << std::endl;
   log(INFO, "Server listening on "+server_address);
 
-  // Register the server to the coordinator
-  
-
+    // Start heartbeat thread
+  std::thread heartbeat_thread(sendHeartbeat, config);
+  heartbeat_thread.detach(); // Run in background
   server->Wait();
 }
-
-
 
 
 int main(int argc, char** argv) {

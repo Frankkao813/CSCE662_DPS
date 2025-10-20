@@ -82,6 +82,7 @@ class CoordServiceImpl final : public CoordService::Service {
 
     Status Heartbeat(ServerContext* context, const ServerInfo* serverinfo, Confirmation* confirmation) override {
         // Your code here
+        std::cout << "Hearbeat message received!" << std::endl;
         return Status::OK;
     }
 
