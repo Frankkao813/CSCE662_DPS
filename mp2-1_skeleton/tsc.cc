@@ -100,12 +100,24 @@ int Client::connectTo()
   auto channel = grpc::CreateChannel(coordinator_addr, grpc::InsecureChannelCredentials());
   coordinator_stub_ = CoordService::NewStub(channel);
   // GetServer(ServerContext* context, const ID* id, ServerInfo* serverinfo) 
-  ID req_id;
-  req_id.set_id(1); // will be changed in the future
+  ID user_id;
+
+  // turn the string to integer
+  user_id.set_id(std::stoi(this -> username)); 
   ClientContext ctx;
   ServerInfo svInfo;
-  coordinator_stub_ -> GetServer(&ctx, req_id, &svInfo);
-  std::cout << "Success until here..." << std::endl;
+  // The client stub expects a reference instead of pointer
+  Status s = coordinator_stub_ -> GetServer(&ctx, user_id, &svInfo);
+  if (s.ok()){
+    std::cout << "We received the message from the coordinator, now unpacking the message..." << std::endl;
+  }
+
+  std::cout << "Connect to ..." <<std::endl;
+  std::cout << "Hostname: " << svInfo.hostname() << std::endl;
+  std::cout << "Port: " << svInfo.port() << std::endl;
+
+  
+  
 
 
 

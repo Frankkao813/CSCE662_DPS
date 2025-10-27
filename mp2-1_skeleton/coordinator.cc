@@ -82,7 +82,44 @@ class CoordServiceImpl final : public CoordService::Service {
 
     Status Heartbeat(ServerContext* context, const ServerInfo* serverinfo, Confirmation* confirmation) override {
         // Your code here
-        std::cout << "Hearbeat message received!" << std::endl;
+        // initialize server info, stuff the server into znode
+        // query what ID it is.
+        int cluster_id = serverinfo -> serverid();
+        // check whether the cluster_id is valid
+        if (cluster_id < 0 || cluster_id >= (int) clusters.size()){
+            // immediately return the request
+            return Status::OK;
+        }
+        
+        zNode* node = new zNode();
+        node -> serverID = serverinfo -> serverid();
+        node -> hostname = serverinfo -> hostname();
+        node -> port = serverinfo -> port();
+        node -> type = serverinfo -> type();
+        node -> last_heartbeat = getTimeNow();
+        node -> missed_heartbeat = false;
+
+        bool updated = false;
+        for (auto &s: clusters[cluster_id]){
+            if (s -> serverID == node -> serverID){
+                s -> last_heartbeat = node -> last_heartbeat;
+                s -> missed_heartbeat = false;
+                updated = true;
+                std::cout << "heartbeat message updated!" << std::endl;
+                delete node;
+                break;
+            }
+            
+        }
+        // if not updated
+        if (!updated){
+            clusters[cluster_id].push_back(node);
+            std::cout << "pushed a new node into the cluster" << std::endl;
+        }
+        
+        // how to regularly check hearbeat??
+
+        std::cout <<"heartbeat received..." << std::endl;
         return Status::OK;
     }
 
@@ -94,7 +131,25 @@ class CoordServiceImpl final : public CoordService::Service {
         std::cout<< "OKay!" << std::endl;
 
         // link back to the serverinfo the send the message
+        /*
+            int32 serverID = 1;
+            string hostname = 2;
+            string port = 3;
+            string type = 4;
+        */
+        //modulus operation
+        int clusterId = ((id -> id() - 1) % 3) + 1;
+        int serverIndex = 0; // There is always one entry in each znode, will be updated later...
+        zNode* destServerInfo = clusters[clusterId][serverIndex];
         
+        // setting the information for the client to fetch
+        // use protobuf setters with arguments
+        serverinfo->set_serverid(destServerInfo->serverID);
+        serverinfo->set_hostname(destServerInfo->hostname);
+        serverinfo->set_port(destServerInfo->port);
+        serverinfo->set_type(destServerInfo->type);
+
+
         return Status::OK;
     }
 
@@ -150,6 +205,7 @@ void checkHeartbeat(){
 
         v_mutex.lock();
 
+        std::cout << "checking whether the server is alive..."<< std::endl;
         // iterating through the clusters vector of vectors of znodes
         for (auto& c : clusters){
             for(auto& s : c){
