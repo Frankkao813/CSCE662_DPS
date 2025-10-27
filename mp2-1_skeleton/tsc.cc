@@ -8,6 +8,7 @@
 #include <grpc++/grpc++.h>
 #include "client.h"
 #include <sstream>
+#include <glog/logging.h>
 
 #include "sns.grpc.pb.h"
 
@@ -104,38 +105,51 @@ int Client::connectTo()
 
   // turn the string to integer
   user_id.set_id(std::stoi(this -> username)); 
+  //std::cout << "The new username is..." << std::stoi(this -> username) << std::endl;
   ClientContext ctx;
   ServerInfo svInfo;
   // The client stub expects a reference instead of pointer
   Status s = coordinator_stub_ -> GetServer(&ctx, user_id, &svInfo);
-  if (s.ok()){
-    std::cout << "We received the message from the coordinator, now unpacking the message..." << std::endl;
+  if (!s.ok()){
+  //   std::cout << "We received the message from the coordinator, now unpacking the message..." << std::endl;
+  // }
+  // else {
+    return -1;
   }
+
+
 
   std::cout << "Connect to ..." <<std::endl;
   std::cout << "Hostname: " << svInfo.hostname() << std::endl;
   std::cout << "Port: " << svInfo.port() << std::endl;
 
   
-  
+  std::string dest_hostname = svInfo.hostname();
+  std::string dest_port = svInfo.port();
 
+  // This is the address to the server
+  std::string server_addr = dest_hostname + ":" + dest_port;
+  // std::cout << "conntecting to ..." << server_addr << std::endl;
+  auto channel_server = grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials());
+  stub_ = SNSService::NewStub(channel_server);
 
-
-  // // This is the address to the server
-  // std::string server_addr = hostname + ":" + port;
-  // // std::cout << "conntecting to ..." << server_addr << std::endl;
-  // auto channel = grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials());
-  // stub_ = SNSService::NewStub(channel);
-
-
-
-  // // call Login rpc
-  // IReply ire = Login();
+  // call Login rpc
+  IReply ire = Login();
 
   // if (ire.comm_status ==  FAILURE_ALREADY_EXISTS){
   //   return -1;
   // }
-  // return 1;
+  // else if (ire.comm_status == FAILURE_INVALID)
+
+  if (ire.comm_status == SUCCESS){
+      // log(INFO, "Client connected to server...");
+      return 1;
+  }
+  else {
+     return -1;
+  }
+
+
 }
 
 IReply Client::processCommand(std::string& input)
@@ -221,6 +235,14 @@ IReply Client::processCommand(std::string& input)
 // processTimeline() calls Timeline()
 void Client::processTimeline()
 {
+    // std::cout << "Entered here..." <<std::endl;
+    // ClientContext ctx;  
+    // auto stream = stub_->Timeline(&ctx);
+    // if (!stream) {
+    //   std::cout << "failed to create stream\n";
+    //   return;
+    // }
+
     Timeline(username);
 }
 
@@ -313,7 +335,7 @@ IReply Client::UnFollow(const std::string& username2) {
 // Login Command  
 IReply Client::Login() {
     // std::cout << "entered here" << std::endl;
-    IReply ire;
+    IReply out;
   
     Request req;
     req.set_username(username);
@@ -322,17 +344,22 @@ IReply Client::Login() {
     ClientContext ctx;
     Status s = stub_ -> Login(&ctx, req, &rep);
 
-    // getter
-    if (rep.msg() == "ALREADY_LOGGED_IN"){
-      ire.comm_status = FAILURE_ALREADY_EXISTS;
-      ire.grpc_status = s;
-    }
-    else {
-      ire.comm_status = SUCCESS;
-      ire.grpc_status = s;
+    if (!s.ok()) {
+        out.comm_status = FAILURE_INVALID;   // or map per status.error_code()
+        out.grpc_status = s;
+        return out;
     }
 
-    return ire;
+    
+    // OK — now use `rep`
+    if (rep.msg() == "ALREADY_LOGGED_IN") {
+        out.comm_status = FAILURE_ALREADY_EXISTS;
+    } else {
+        out.comm_status = SUCCESS;
+    }
+    out.grpc_status = s;
+    return out;
+
 }
 
 // Timeline Command
@@ -367,7 +394,18 @@ void Client::Timeline(const std::string& username) {
     // initialize the first message
     Message hello;
     hello.set_username(username);
-    stream->Write(hello);
+    // stream->Write(hello);
+    // Try writing the first message
+    if (!stream->Write(hello)) {
+        //std::cerr << "Initial write failed (server may be down or closed stream)\n";
+        std::cerr << "Command failed \n";
+        stream->WritesDone();
+        grpc::Status s = stream->Finish();
+        // std::cerr << "Status: " << s.error_message() 
+        //           << " (code=" << s.error_code() << ")\n";
+        
+        return;
+    }
 
     std::atomic<bool> done{false};
 
@@ -412,6 +450,14 @@ void Client::Timeline(const std::string& username) {
 /////////////////////////////////////////////
 int main(int argc, char** argv) {
 
+  google::InitGoogleLogging(argv[0]);
+  FLAGS_log_dir = "./logs";
+  FLAGS_alsologtostderr = 1;   // and also to stderr (terminal)
+  FLAGS_colorlogtostderr = 1;  // optional: colored terminal logs
+  FLAGS_logbufsecs = 0;  // set once after InitGoogleLogging
+
+  LOG(INFO) << "Client starting...";
+
   std::string hostname = "localhost";
   std::string username = "default";
   std::string port = "3010";
@@ -433,7 +479,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::cout << "hostname " << hostname << " " << "username " << username << " " << "port " << port << " " << "coordinatorPort " << " " <<  coordinatorPort <<std::endl;
+  // std::cout << "hostname " << hostname << " " << "username " << username << " " << "port " << port << " " << "coordinatorPort " << " " <<  coordinatorPort <<std::endl;
       
   std::cout << "Logging Initialized. Client starting...";
   

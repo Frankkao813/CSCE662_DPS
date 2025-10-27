@@ -102,6 +102,7 @@ void IClient::displayCommandReply(const std::string& comm, const IReply& reply) 
     }
   } else {
     std::cout << "grpc failed: " << reply.grpc_status.error_message() << std::endl;
+    
   }
 }
 
