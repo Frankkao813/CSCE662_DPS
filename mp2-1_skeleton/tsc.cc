@@ -76,7 +76,7 @@ private:
   IReply List();
   IReply Follow(const std::string &username);
   IReply UnFollow(const std::string &username);
-  void   Timeline(const std::string &username);
+  IReply  Timeline(const std::string &username);
 };
 
 
@@ -111,42 +111,31 @@ int Client::connectTo()
   // The client stub expects a reference instead of pointer
   Status s = coordinator_stub_ -> GetServer(&ctx, user_id, &svInfo);
   if (!s.ok()){
-  //   std::cout << "We received the message from the coordinator, now unpacking the message..." << std::endl;
-  // }
-  // else {
+    // TODO: handle this failure case
     return -1;
   }
 
 
-
-  std::cout << "Connect to ..." <<std::endl;
-  std::cout << "Hostname: " << svInfo.hostname() << std::endl;
-  std::cout << "Port: " << svInfo.port() << std::endl;
-
-  
   std::string dest_hostname = svInfo.hostname();
   std::string dest_port = svInfo.port();
 
   // This is the address to the server
   std::string server_addr = dest_hostname + ":" + dest_port;
-  // std::cout << "conntecting to ..." << server_addr << std::endl;
   auto channel_server = grpc::CreateChannel(server_addr, grpc::InsecureChannelCredentials());
   stub_ = SNSService::NewStub(channel_server);
 
   // call Login rpc
   IReply ire = Login();
 
-  // if (ire.comm_status ==  FAILURE_ALREADY_EXISTS){
-  //   return -1;
-  // }
-  // else if (ire.comm_status == FAILURE_INVALID)
 
   if (ire.comm_status == SUCCESS){
+      LOG(INFO) << "[Connection Information]" << " Hostname: " << svInfo.hostname() << " " << "Port: " << svInfo.port();
       // log(INFO, "Client connected to server...");
       return 1;
   }
   else {
-     return -1;
+      LOG(ERROR) << "connection failed";
+    return -1;
   }
 
 
@@ -222,7 +211,8 @@ IReply Client::processCommand(std::string& input)
       ire = List();
     }
     else if (action == "TIMELINE"){
-      Client::processTimeline();
+      // Client::processTimeline();
+      ire = Timeline(username);
     }
     else {
       std::cout << "invalid command";
@@ -235,14 +225,6 @@ IReply Client::processCommand(std::string& input)
 // processTimeline() calls Timeline()
 void Client::processTimeline()
 {
-    // std::cout << "Entered here..." <<std::endl;
-    // ClientContext ctx;  
-    // auto stream = stub_->Timeline(&ctx);
-    // if (!stream) {
-    //   std::cout << "failed to create stream\n";
-    //   return;
-    // }
-
     Timeline(username);
 }
 
@@ -259,7 +241,8 @@ IReply Client::List() {
   Status s = stub_ -> List(&ctx, req, &listRep);
   ire.grpc_status = s;
   if (!s.ok()) {
-    ire.comm_status = FAILURE_UNKNOWN;          
+    ire.comm_status = FAILURE_SERVER_UNREACHABLE;
+    LOG(ERROR) << "Status: " << s.error_message();          
     return ire;
   }
 
@@ -363,7 +346,7 @@ IReply Client::Login() {
 }
 
 // Timeline Command
-void Client::Timeline(const std::string& username) {
+IReply Client::Timeline(const std::string& username) {
 
     // ------------------------------------------------------------
     // In this function, you are supposed to get into timeline mode.
@@ -386,7 +369,8 @@ void Client::Timeline(const std::string& username) {
     YOUR CODE HERE
     ***/
 
-    //std::cout << "Now you are in timeline mode!" << std::endl;
+
+    IReply ire;
     ClientContext ctx;
     std::unique_ptr<grpc::ClientReaderWriter<Message, Message>> stream(stub_->Timeline(&ctx));
     
@@ -398,14 +382,20 @@ void Client::Timeline(const std::string& username) {
     // Try writing the first message
     if (!stream->Write(hello)) {
         //std::cerr << "Initial write failed (server may be down or closed stream)\n";
-        std::cerr << "Command failed \n";
+        //std::cerr << "Command failed \n";
         stream->WritesDone();
         grpc::Status s = stream->Finish();
         // std::cerr << "Status: " << s.error_message() 
         //           << " (code=" << s.error_code() << ")\n";
         
-        return;
+        ire.comm_status = FAILURE_SERVER_UNREACHABLE;   
+        LOG(ERROR) << "Status: " << s.error_message();
+        return ire;
     }
+
+  
+    std::cout << "Command completed successfully" << std::endl;
+    LOG(INFO) << "Now you are in the timeline";
 
     std::atomic<bool> done{false};
 
@@ -449,20 +439,12 @@ void Client::Timeline(const std::string& username) {
 // Main Function
 /////////////////////////////////////////////
 int main(int argc, char** argv) {
-
-  google::InitGoogleLogging(argv[0]);
-  FLAGS_log_dir = "./logs";
-  FLAGS_alsologtostderr = 1;   // and also to stderr (terminal)
-  FLAGS_colorlogtostderr = 1;  // optional: colored terminal logs
-  FLAGS_logbufsecs = 0;  // set once after InitGoogleLogging
-
-  LOG(INFO) << "Client starting...";
-
   std::string hostname = "localhost";
   std::string username = "default";
   std::string port = "3010";
   std::string coordinatorPort = "9090";
-    
+
+
   int opt = 0;
   while ((opt = getopt(argc, argv, "h:u:p:k:")) != -1){
     switch(opt) {
@@ -479,7 +461,15 @@ int main(int argc, char** argv) {
     }
   }
 
-  // std::cout << "hostname " << hostname << " " << "username " << username << " " << "port " << port << " " << "coordinatorPort " << " " <<  coordinatorPort <<std::endl;
+  std::string log_file_name =  std::string("client-") + "-" + username;
+  google::InitGoogleLogging(log_file_name.c_str());
+  FLAGS_log_dir = "./logs";
+  FLAGS_alsologtostderr = 1;   // and also to stderr (terminal)
+  FLAGS_colorlogtostderr = 1;  // optional: colored terminal logs
+  FLAGS_logbufsecs = 0;  // set once after InitGoogleLogging
+
+  LOG(INFO) << "Client starting...";
+
       
   std::cout << "Logging Initialized. Client starting...";
   

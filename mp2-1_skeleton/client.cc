@@ -96,12 +96,22 @@ void IClient::displayCommandReply(const std::string& comm, const IReply& reply) 
     case FAILURE_UNKNOWN:
       std::cout << "Command failed with unknown reason\n";
       break;
+    case FAILURE_SERVER_UNREACHABLE:
+      std::cout << "command failed\n";
+      break;
     default:
       std::cout << "Invalid status\n";
       break;
     }
   } else {
-    std::cout << "grpc failed: " << reply.grpc_status.error_message() << std::endl;
+    switch (reply.comm_status) {
+        case FAILURE_SERVER_UNREACHABLE:
+          std::cout << "command failed\n";
+          break;
+        default:
+          std::cout << "grpc failed: " << reply.grpc_status.error_message() << std::endl;
+          break;
+    }
     
   }
 }

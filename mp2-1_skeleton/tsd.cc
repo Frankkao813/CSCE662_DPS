@@ -48,7 +48,7 @@
 #include <grpc++/grpc++.h>
 #include<glog/logging.h>
 #include<thread>
-#define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity); 
+// #define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity); 
 
 #include "sns.grpc.pb.h"
 #include "coordinator.grpc.pb.h"
@@ -465,10 +465,12 @@ void sendHeartbeat(const ServerConfig& config){
     grpc::Status status = coordinator_stub_->Heartbeat(&context, server_info, &confirmation);
 
     if (!status.ok()){
-      log(ERROR, "Heartbeat failed: " + status.error_message());
+      //log(ERROR, "Heartbeat failed: " + status.error_message());
+      LOG(ERROR) << "Heartbeat failed: " + status.error_message();
     }
     else {
-      log(INFO, "heartbeat sent successfully");
+      //log(INFO, "heartbeat sent successfully");
+      LOG(INFO) << "heartbeat sent successfully";
     }
 
       std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -483,10 +485,9 @@ void RunServer(const ServerConfig& config) {
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
   std::unique_ptr<Server> server(builder.BuildAndStart());
-  std::cout << "Server listening on " << server_address << std::endl;
-  log(INFO, "Server listening on "+server_address);
+  LOG(INFO) << "Server listening on " + server_address;
 
-    // Start heartbeat thread
+  // Start heartbeat thread
   std::thread heartbeat_thread(sendHeartbeat, config);
   heartbeat_thread.detach(); // Run in background
   server->Wait();
@@ -494,8 +495,21 @@ void RunServer(const ServerConfig& config) {
 
 
 int main(int argc, char** argv) {
+  
   ServerConfig config;
   config.port = "3010";
+  
+  std::string log_file_name = std::string("server-") + config.port;
+  google::InitGoogleLogging(log_file_name.c_str());
+  // google::InitGoogleLogging(argv[0]);
+  FLAGS_log_dir = "./logs";
+  //FLAGS_logtostderr = 1;
+  FLAGS_alsologtostderr = 1;   // and also to stderr (terminal)
+  FLAGS_colorlogtostderr = 1;  // optional: colored terminal logs
+  //FLAGS_stderrthreshold = google::GLOG_FATAL;  // only FATAL to stderr
+  FLAGS_logbufsecs = 0;  // set once after InitGoogleLogging
+
+
 
 
   int opt = 0;
@@ -512,13 +526,14 @@ int main(int argc, char** argv) {
       case 'k':
           config.coordinatorPort = optarg;break;
       default:
+    LOG(ERROR) << "Invalid Command Line Argument";
 	  std::cerr << "Invalid Command Line Argument\n";
     }
   }
   
-  std::string log_file_name = std::string("server-") + config.port;
-  google::InitGoogleLogging(log_file_name.c_str());
-  log(INFO, "Logging Initialized. Server starting...");
+
+  //log(INFO, "Logging Initialized. Server starting...");
+  LOG(INFO) << "Logging Initialized. Server starting...";
   RunServer(config);
 
   return 0;

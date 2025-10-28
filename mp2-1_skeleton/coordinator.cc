@@ -90,6 +90,7 @@ class CoordServiceImpl final : public CoordService::Service {
         // check whether the cluster_id is valid
         if (cluster_id < 0 || cluster_id >= (int) clusters.size()){
             // immediately return the request
+            LOG(ERROR) << "cluster_id not valid"; 
             return Status::OK;
         }
         
@@ -117,7 +118,7 @@ class CoordServiceImpl final : public CoordService::Service {
         if (!updated){
             clusters[cluster_id].push_back(node);
             //std::cout << "pushed a new node into the cluster" << std::endl;
-            LOG(INFO) << "successfully writes a serrver to the corrdinator...";
+            LOG(INFO) << "successfully writes a server to the coordinator...";
         }
         
         // how to regularly check hearbeat??
@@ -184,7 +185,8 @@ void RunServer(std::string port_no){
     builder.RegisterService(&service);
     // Finally assemble the server.
     std::unique_ptr<Server> server(builder.BuildAndStart());
-    std::cout << "Server listening on " << server_address << std::endl;
+    LOG(INFO) << "Server listening on " << server_address << std::endl;
+    //std::cout << "Server listening on " << server_address << std::endl;
 
     // Wait for the server to shutdown. Note that some other thread must be
     // responsible for shutting down the server for this call to ever return.
@@ -192,17 +194,7 @@ void RunServer(std::string port_no){
 }
 
 int main(int argc, char** argv) {
-    // /usr/local/include/glog/logging.h
-    google::InitGoogleLogging(argv[0]);
-    FLAGS_log_dir = "./logs";
-    //FLAGS_logtostderr = 1;
-    FLAGS_alsologtostderr = 1;   // and also to stderr (terminal)
-    FLAGS_colorlogtostderr = 1;  // optional: colored terminal logs
-    //FLAGS_stderrthreshold = google::GLOG_FATAL;  // only FATAL to stderr
-    FLAGS_logbufsecs = 0;  // set once after InitGoogleLogging
-
-    LOG(INFO) << "Coordinator starting...";
-
+    
     std::string port = "3010";
     int opt = 0;
     while ((opt = getopt(argc, argv, "p:")) != -1){
@@ -214,6 +206,19 @@ int main(int argc, char** argv) {
                 std::cerr << "Invalid Command Line Argument\n";
         }
     }
+    std::string log_file_name = std::string("coordinator-") + port;
+
+    // /usr/local/include/glog/logging.h
+    google::InitGoogleLogging(log_file_name.c_str());
+    FLAGS_log_dir = "./logs";
+    //FLAGS_logtostderr = 1;
+    FLAGS_alsologtostderr = 1;   // and also to stderr (terminal)
+    FLAGS_colorlogtostderr = 1;  // optional: colored terminal logs
+    //FLAGS_stderrthreshold = google::GLOG_FATAL;  // only FATAL to stderr
+    FLAGS_logbufsecs = 0;  // set once after InitGoogleLogging
+
+    LOG(INFO) << "Coordinator starting...";
+
     RunServer(port);
     return 0;
 }
@@ -227,8 +232,6 @@ void checkHeartbeat(){
 
         v_mutex.lock();
 
-        //std::cout << "checking whether the server is alive..."<< std::endl;
-        // iterating through the clusters vector of vectors of znodes
         for (auto& c : clusters){
             for(auto& s : c){
                 if(difftime(getTimeNow(),s->last_heartbeat)>10){
@@ -243,7 +246,7 @@ void checkHeartbeat(){
 
         v_mutex.unlock();
 
-        sleep(1); // check every 1 second...
+        sleep(5); // check every 1 second...
     }
 }
 
