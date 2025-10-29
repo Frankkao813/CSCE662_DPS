@@ -430,6 +430,8 @@ IReply Client::Timeline(const std::string& username) {
     writer.join();
 
     grpc::Status s = stream->Finish();
+    ire.comm_status = SUCCESS;
+    return ire;   
 
 }
 
