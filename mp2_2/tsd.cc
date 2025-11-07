@@ -458,19 +458,23 @@ void sendHeartbeat(const ServerConfig& config){
     server_info.set_serverid(std::stoi(config.serverId));
     server_info.set_hostname(config.coordinatorIP); // or get actual hostname
     server_info.set_port(config.port);
-    server_info.set_type("master"); // or "slave" based on your logic
+    if (config.serverId == "1"){
+        server_info.set_type("master");
+    } else {
+        server_info.set_type("slave");
+    }
+    server_info.set_clusterid(std::stoi(config.clusterId));
 
     Confirmation confirmation;
     grpc::ClientContext context;
     grpc::Status status = coordinator_stub_->Heartbeat(&context, server_info, &confirmation);
 
+    // add informative message from client to recipient
     if (!status.ok()){
-      //log(ERROR, "Heartbeat failed: " + status.error_message());
-      LOG(ERROR) << "Heartbeat failed: " + status.error_message();
+      LOG(ERROR) << "Heartbeat failed to send from server " + config.serverId + ": " + status.error_message();
     }
     else {
-      //log(INFO, "heartbeat sent successfully");
-      LOG(INFO) << "heartbeat sent successfully";
+      LOG(INFO) << "heartbeat sent successfully from server " + config.serverId;
     }
 
     std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -498,21 +502,7 @@ int main(int argc, char** argv) {
   
   ServerConfig config;
   config.port = "3010";
-  
-  std::string log_file_name = std::string("server-") + config.port;
-  google::InitGoogleLogging(log_file_name.c_str());
-  // google::InitGoogleLogging(argv[0]);
-  FLAGS_log_dir = "./logs";
-  //FLAGS_logtostderr = 1;
-  FLAGS_alsologtostderr = 1;   // and also to stderr (terminal)
-  FLAGS_colorlogtostderr = 1;  // optional: colored terminal logs
-  //FLAGS_stderrthreshold = google::GLOG_FATAL;  // only FATAL to stderr
-  FLAGS_logbufsecs = 0;  // set once after InitGoogleLogging
-
-
-
-
-  int opt = 0;
+    int opt = 0;
   while ((opt = getopt(argc, argv, "p:c:s:h:k:")) != -1){
     switch(opt) {
       case 'p':
@@ -531,6 +521,28 @@ int main(int argc, char** argv) {
     }
   }
   
+
+  
+  std::string log_file_name = std::string("server-") + config.port;
+  google::InitGoogleLogging(log_file_name.c_str());
+  // google::InitGoogleLogging(argv[0]);
+  FLAGS_log_dir = "./logs/cluster/" + config.clusterId + "/" + config.serverId + "/";
+  // if the directory is not created, create one
+  std::filesystem::create_directories(FLAGS_log_dir);
+
+  // also, create the folder to store user file
+  std::filesystem::create_directories("./cluster/" + config.clusterId + "/" + config.serverId + "/");
+
+  //FLAGS_logtostderr = 1;
+  FLAGS_alsologtostderr = 1;   // and also to stderr (terminal)
+  FLAGS_colorlogtostderr = 1;  // optional: colored terminal logs
+  //FLAGS_stderrthreshold = google::GLOG_FATAL;  // only FATAL to stderr
+  FLAGS_logbufsecs = 0;  // set once after InitGoogleLogging
+
+
+
+
+
 
   //log(INFO, "Logging Initialized. Server starting...");
   LOG(INFO) << "Logging Initialized. Server starting...";

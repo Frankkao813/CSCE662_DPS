@@ -383,6 +383,9 @@ int main(int argc, char **argv)
     std::string coordPort;
     std::string port = "3029";
 
+
+
+    // Why not set clusterID?
     while ((opt = getopt(argc, argv, "h:k:p:i:")) != -1)
     {
         switch (opt)
@@ -404,6 +407,9 @@ int main(int argc, char **argv)
         }
     }
 
+
+
+
     std::string log_file_name = std::string("synchronizer-") + port;
     google::InitGoogleLogging(log_file_name.c_str());
     log(INFO, "Logging Initialized. Server starting...");
@@ -417,6 +423,16 @@ int main(int argc, char **argv)
     serverInfo.set_serverid(synchID);
     serverInfo.set_clusterid(clusterID);
     Heartbeat(coordIP, coordPort, serverInfo, synchID);
+
+    // start the hearbeat thread
+    // () mutable: allowed to modify captured variables
+    std::thread hb_thread([coordIP, coordPort, serverInfo, synchID]() mutable {
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            Heartbeat(coordIP, coordPort, serverInfo, synchID);
+        }
+    });
+    hb_thread.detach();
 
     RunServer(coordIP, coordPort, port, synchID);
     return 0;
@@ -523,8 +539,19 @@ void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInf
     std::unique_ptr<CoordService::Stub> stub = std::unique_ptr<CoordService::Stub>(CoordService::NewStub(grpc::CreateChannel(coordinatorInfo, grpc::InsecureChannelCredentials())));
 
     // send a heartbeat to the coordinator, which registers your follower synchronizer as either a master or a slave
+    Confirmation confirmation;
+    grpc::ClientContext context;
+    // create a local stub and use it (the global coordinator_stub_ is not initialized here)
+    grpc::Status status = stub->Heartbeat(&context, serverInfo, &confirmation);
 
     // YOUR CODE HERE
+    if (!status.ok()){
+        log(ERROR, "Heartbeat failed to send from synchronizer " + std::to_string(serverInfo.serverid()) + ": " + status.error_message());
+
+    }
+    else {
+      log(INFO, "heartbeat sent successfully from synchronizer " + std::to_string(serverInfo.serverid()));
+    }
 }
 
 bool file_contains_user(std::string filename, std::string user)

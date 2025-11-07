@@ -43,8 +43,8 @@ using csce438::SynchService;
 
 //#define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity);
 
-struct zNode{
-    int serverID;
+
+struct BaseNode{
     std::string hostname;
     std::string port;
     std::string type;
@@ -53,6 +53,27 @@ struct zNode{
     bool isActive();
 
 };
+
+struct zNode: public BaseNode {
+    int serverID;
+
+};
+
+struct syncNode: public BaseNode {
+    int syncID;
+};
+
+// // add the node for synchornizers
+// struct syncNode{
+//     int syncID;
+//     std::string hostname;
+//     std::string port;
+//     std::string type;
+//     std::time_t last_heartbeat;
+//     bool missed_heartbeat;
+//     bool isActive();
+
+// };
 
 //potentially thread safe 
 std::mutex v_mutex;
@@ -70,7 +91,7 @@ std::time_t getTimeNow();
 void checkHeartbeat();
 
 
-bool zNode::isActive(){
+bool BaseNode::isActive(){
     bool status = false;
     if(!missed_heartbeat){
         status = true;
@@ -86,45 +107,56 @@ class CoordServiceImpl final : public CoordService::Service {
     Status Heartbeat(ServerContext* context, const ServerInfo* serverinfo, Confirmation* confirmation) override {
         // Your code here
         // The cluster index starts from 0.
-        int cluster_id = serverinfo -> serverid() - 1;
-        // check whether the cluster_id is valid
-        if (cluster_id < 0 || cluster_id >= (int) clusters.size()){
+
+
+        if (serverinfo -> type() == "synchronizer"){
+            std::cout << "Received heartbeat from synchronizer " << serverinfo -> serverid() << std::endl; // serverID is syncID here
             // immediately return the request
-            LOG(ERROR) << "cluster_id not valid"; 
             return Status::OK;
         }
-        
-        zNode* node = new zNode();
-        node -> serverID = serverinfo -> serverid();
-        node -> hostname = serverinfo -> hostname();
-        node -> port = serverinfo -> port();
-        node -> type = serverinfo -> type();
-        node -> last_heartbeat = getTimeNow();
-        node -> missed_heartbeat = false;
-
-        bool updated = false;
-        for (auto &s: clusters[cluster_id]){
-            if (s -> serverID == node -> serverID){
-                s -> last_heartbeat = node -> last_heartbeat;
-                s -> missed_heartbeat = false;
-                updated = true;
-                //std::cout << "heartbeat message updated!" << std::endl;
-                delete node;
-                break;
+        else{ // server - master or slave
+            int cluster_id = serverinfo -> clusterid() - 1;
+            std::cout << "Received heartbeat from server " << serverinfo -> serverid() << " in cluster " << cluster_id + 1 << std::endl;
+            // check whether the cluster_id is valid
+            if (cluster_id < 0 || cluster_id >= (int) clusters.size()){
+                // immediately return the request
+                LOG(ERROR) << "cluster_id not valid"; 
+                return Status::OK;
             }
             
-        }
-        // if not updated
-        if (!updated){
-            clusters[cluster_id].push_back(node);
-            //std::cout << "pushed a new node into the cluster" << std::endl;
-            LOG(INFO) << "successfully writes a server to the coordinator...";
-        }
-        
-        // how to regularly check hearbeat??
+            zNode* node = new zNode();
+            node -> serverID = serverinfo -> serverid();
+            node -> hostname = serverinfo -> hostname();
+            node -> port = serverinfo -> port();
+            node -> type = serverinfo -> type();
+            node -> last_heartbeat = getTimeNow();
+            node -> missed_heartbeat = false;
 
-        //std::cout <<"heartbeat received..." << std::endl;
-        return Status::OK;
+            bool updated = false;
+            for (auto &s: clusters[cluster_id]){
+                if (s -> serverID == node -> serverID){
+                    s -> last_heartbeat = node -> last_heartbeat;
+                    s -> missed_heartbeat = false;
+                    updated = true;
+                    //std::cout << "heartbeat message updated!" << std::endl;
+                    delete node;
+                    break;
+                }
+                
+            }
+            // if not updated
+            if (!updated){
+                clusters[cluster_id].push_back(node);
+                //std::cout << "pushed a new node into the cluster" << std::endl;
+                LOG(INFO) << "successfully writes " << node -> serverID <<  " to the coordinator cluster " <<  cluster_id;
+            }
+            
+            // how to regularly check hearbeat??
+
+            //std::cout <<"heartbeat received..." << std::endl;
+            return Status::OK;
+        }
+
     }
 
     //function returns the server information for requested client id
@@ -210,7 +242,9 @@ int main(int argc, char** argv) {
 
     // /usr/local/include/glog/logging.h
     google::InitGoogleLogging(log_file_name.c_str());
-    FLAGS_log_dir = "./logs";
+
+    FLAGS_log_dir = "./logs/coordinator/";
+    std::filesystem::create_directories(FLAGS_log_dir);
     //FLAGS_logtostderr = 1;
     FLAGS_alsologtostderr = 1;   // and also to stderr (terminal)
     FLAGS_colorlogtostderr = 1;  // optional: colored terminal logs
