@@ -59,21 +59,12 @@ struct zNode: public BaseNode {
 
 };
 
+// node for synchronizers
 struct syncNode: public BaseNode {
     int syncID;
 };
 
-// // add the node for synchornizers
-// struct syncNode{
-//     int syncID;
-//     std::string hostname;
-//     std::string port;
-//     std::string type;
-//     std::time_t last_heartbeat;
-//     bool missed_heartbeat;
-//     bool isActive();
 
-// };
 
 //potentially thread safe 
 std::mutex v_mutex;
@@ -83,6 +74,18 @@ std::vector<zNode*> cluster3;
 
 // creating a vector of vectors containing znodes
 std::vector<std::vector<zNode*>> clusters = {cluster1, cluster2, cluster3};
+
+
+
+
+// synchronizer nodes vector
+// Do we need the mutex here as well?
+std::mutex sync_v_mutex;
+
+std::vector<syncNode*> sync_cluster1;
+std::vector<syncNode*> sync_cluster2;
+std::vector<syncNode*> sync_cluster3;
+std::vector<std::vector<syncNode*>> sync_clusters = {sync_cluster1, sync_cluster2, sync_cluster3};
 
 
 //func declarations
@@ -131,27 +134,27 @@ class CoordServiceImpl final : public CoordService::Service {
             node -> type = serverinfo -> type();
             node -> last_heartbeat = getTimeNow();
             node -> missed_heartbeat = false;
-
+            
+            std::lock_guard<std::mutex> guard(v_mutex); // lock the mutex for thread safety
             bool updated = false;
             for (auto &s: clusters[cluster_id]){
+                // if serverID matches, update the heartbeat time
                 if (s -> serverID == node -> serverID){
                     s -> last_heartbeat = node -> last_heartbeat;
                     s -> missed_heartbeat = false;
                     updated = true;
-                    //std::cout << "heartbeat message updated!" << std::endl;
                     delete node;
                     break;
                 }
                 
             }
-            // if not updated
+            // The node doesn't exist in the cluster, add it
             if (!updated){
                 clusters[cluster_id].push_back(node);
                 //std::cout << "pushed a new node into the cluster" << std::endl;
                 LOG(INFO) << "successfully writes " << node -> serverID <<  " to the coordinator cluster " <<  cluster_id;
             }
             
-            // how to regularly check hearbeat??
 
             //std::cout <<"heartbeat received..." << std::endl;
             return Status::OK;
@@ -280,7 +283,7 @@ void checkHeartbeat(){
 
         v_mutex.unlock();
 
-        sleep(5); // check every 1 second...
+        sleep(5); // check every 5 second...
     }
 }
 

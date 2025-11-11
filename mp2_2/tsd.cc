@@ -277,6 +277,9 @@ void printTimestamp(const google::protobuf::Timestamp& ts) {
 class SNSServiceImpl final : public SNSService::Service {
 
 
+   public:
+    // Construct service with server configuration so RPC handlers can access it
+    explicit SNSServiceImpl(const ServerConfig& cfg) : server_config_(cfg) {}
   
   Status List(ServerContext* context, const Request* request, ListReply* list_reply) override {
     // request is from grpc protobuf message
@@ -391,6 +394,22 @@ class SNSServiceImpl final : public SNSService::Service {
     client_db.push_back(newClient);
     reply -> set_msg("SUCCESS");
 
+    // write to the user file
+    // Create per-server user folder and write a simple user record so we persist
+    // which server the user was created on. This uses the ServerConfig that
+    // was injected when the service was constructed.
+    try {
+      std::string server_folder = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/";
+      std::filesystem::create_directories(server_folder);
+      std::string user_file = server_folder +  "all_users.txt";
+      std::ofstream out(user_file, std::ios::app);
+      if (out) {
+        out << uname << "\n"; // the username is written in the file
+      }
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "Failed to write user file: " << e.what();
+    }
+
     return Status::OK;
   }
 
@@ -431,12 +450,15 @@ class SNSServiceImpl final : public SNSService::Service {
 
     
     return Status::OK;
-  }
+    }
 
-};
+   private:
+    ServerConfig server_config_;
+
+  };
 
 
-// send HeartBeat message
+  // send HeartBeat message
 void sendHeartbeat(const ServerConfig& config){
     // Register the server to the coordinator
   std::string coordinator_addr = config.coordinatorIP + ":" + config.coordinatorPort;
@@ -483,7 +505,7 @@ void sendHeartbeat(const ServerConfig& config){
 
 void RunServer(const ServerConfig& config) {
   std::string server_address = "0.0.0.0:"+ config.port;
-  SNSServiceImpl service;
+  SNSServiceImpl service(config);
 
   ServerBuilder builder;
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());

@@ -138,6 +138,7 @@ int Client::connectTo()
     return -1;
   }
 
+  // TODO: write to all_users.txt
 
 }
 

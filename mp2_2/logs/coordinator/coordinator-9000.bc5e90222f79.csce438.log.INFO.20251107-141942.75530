@@ -1,6 +1,0 @@
-Log file created at: 2025/11/07 14:19:42
-Running on machine: bc5e90222f79
-Running duration (h:mm:ss): 0:00:00
-Log line format: [IWEF]yyyymmdd hh:mm:ss.uuuuuu threadid file:line] msg
-I20251107 14:19:42.365875 75530 coordinator.cc:245] Coordinator starting...
-I20251107 14:19:42.379413 75530 coordinator.cc:211] Server listening on 127.0.0.1:9000
