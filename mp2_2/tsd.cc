@@ -71,7 +71,9 @@ using csce438::ListReply;
 using csce438::Request;
 using csce438::Reply;
 using csce438::SNSService;
-
+using csce438::CoordService; // newly_added
+using csce438::ID; // newly added
+using grpc::ClientContext; // newly added
 
 struct Client {
   std::string username;
@@ -279,7 +281,14 @@ class SNSServiceImpl final : public SNSService::Service {
 
    public:
     // Construct service with server configuration so RPC handlers can access it
-    explicit SNSServiceImpl(const ServerConfig& cfg) : server_config_(cfg) {}
+    explicit SNSServiceImpl(const ServerConfig& cfg) : server_config_(cfg) {
+      if (server_config_.serverId == "1" && !server_config_.coordinatorIP.empty() && !server_config_.coordinatorPort.empty()) {
+        // create grpc stub
+        std::string coord_addr = server_config_.coordinatorIP + ":" + server_config_.coordinatorPort;
+        auto channel = grpc::CreateChannel(coord_addr, grpc::InsecureChannelCredentials());
+        coordinator_stub_ = CoordService::NewStub(channel);
+    }
+  }
   
   Status List(ServerContext* context, const Request* request, ListReply* list_reply) override {
     // request is from grpc protobuf message
@@ -410,6 +419,21 @@ class SNSServiceImpl final : public SNSService::Service {
       LOG(ERROR) << "Failed to write user file: " << e.what();
     }
 
+
+    // mirror the same operation to slave
+    // TODO: Implement mirroring logic here
+    std::string  slave_port = getSlaveAddrFromCoord(std::stoi(server_config_.port)); 
+    std::cout << "the server id is " << server_config_.serverId << std::endl;
+    if (server_config_.serverId == "1" && !slave_port.empty()){
+      std::cout << "We are sending message to slave port " << slave_port << std::endl;
+      Request req;
+      req.set_username(uname);
+      Reply rep;
+      ClientContext ctx;
+      auto stub = SNSService::NewStub(grpc::CreateChannel(slave_port, grpc::InsecureChannelCredentials()));
+        Status s = stub->Login(&ctx, req, &rep);
+    }
+
     return Status::OK;
   }
 
@@ -454,6 +478,28 @@ class SNSServiceImpl final : public SNSService::Service {
 
    private:
     ServerConfig server_config_;
+    std::unique_ptr<CoordService::Stub> coordinator_stub_;
+
+    // a private helper (master asking the address from slave)
+    std::string getSlaveAddrFromCoord(int server_id){
+      if (!coordinator_stub_) return "";
+        ID server_port;
+
+      // turn the string to integer
+      server_port.set_id(std::stoi(server_config_.port)); 
+      //std::cout << "The new username is..." << std::stoi(this -> username) << std::endl;
+      ClientContext ctx;
+      ServerInfo svInfo;
+      // The client stub expects a reference instead of pointer
+      Status s = coordinator_stub_ -> GetServer(&ctx, server_port, &svInfo);
+      if (s.ok()) {
+        std::cout << "Received server info from coordinator: " << svInfo.hostname() << ":" << svInfo.port() << std::endl;
+        return svInfo.hostname() + ":" + svInfo.port();
+      } else {
+        LOG(ERROR) << "Failed to get server info from coordinator: " << s.error_message();
+        return "";
+      }
+    }
 
   };
 

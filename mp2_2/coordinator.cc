@@ -177,25 +177,52 @@ class CoordServiceImpl final : public CoordService::Service {
             string type = 4;
         */
         //modulus operation
-        int clusterId = ((id -> id() - 1) % 3);
-        int serverIndex = 0; // There is always one entry in each znode, will be updated later...
-        zNode* destServerInfo = clusters[clusterId][serverIndex];
-        
-        // setting the information for the client to fetch
-        // use protobuf setters with arguments
-        if (destServerInfo -> isActive()){
-            serverinfo->set_serverid(destServerInfo->serverID);
-            serverinfo->set_hostname(destServerInfo->hostname);
-            serverinfo->set_port(destServerInfo->port);
-            serverinfo->set_type(destServerInfo->type);
+
+        int raw_id = id -> id();
+        int PORT_BASE = 10000;
+        if (raw_id >= PORT_BASE){ // Asking for the existence of slave
+            // find the cluster, take out the inforamtion in the second node
+            int clusterId = (id -> id() / PORT_BASE) -1 ;
+            // If there is only one node in the cluster, may cause segmentation fault
+            if (clusters[clusterId].size() > 1) {
+                zNode* destServerInfo = clusters[clusterId][1];
+                if (destServerInfo -> isActive()){
+                    serverinfo->set_serverid(destServerInfo->serverID);
+                    serverinfo->set_hostname(destServerInfo->hostname);
+                    serverinfo->set_port(destServerInfo->port);
+                    serverinfo->set_type(destServerInfo->type);
+                }
+            }
+            else {
+                LOG(ERROR) << "There is no slave in this cluster.";
+                return grpc::Status(grpc::StatusCode::UNAVAILABLE, "There is no slave in this cluster.");
+            }
 
         }
         else {
-            // std::cout << "The server is not active..." << std::endl;
-            LOG(ERROR) << "No active server in the cluster";
-            return grpc::Status(grpc::StatusCode::UNAVAILABLE, "No active server in the cluster.");
-        }
 
+            int clusterId = ((id -> id() - 1) % 3);
+            int serverIndex = 0; // There is always one entry in each znode, will be updated later...
+            zNode* destServerInfo = clusters[clusterId][serverIndex];
+            
+            // setting the information for the client to fetch
+            // use protobuf setters with arguments
+            if (destServerInfo -> isActive()){
+                serverinfo->set_serverid(destServerInfo->serverID);
+                serverinfo->set_hostname(destServerInfo->hostname);
+                serverinfo->set_port(destServerInfo->port);
+                serverinfo->set_type(destServerInfo->type);
+
+            }
+            else {
+                // std::cout << "The server is not active..." << std::endl;
+                LOG(ERROR) << "No active server in the cluster";
+                return grpc::Status(grpc::StatusCode::UNAVAILABLE, "No active server in the cluster.");
+            }
+
+
+
+        }
 
 
         return Status::OK;
