@@ -12,3 +12,7 @@
 /mp1_skeleton/*.o
 /mp1_skeleton/*.exe
 /mp1_skeleton/*.out
+
+# ignore the logs 
+/mp2_2/cluster/
+/mp2_2/logs/

@@ -105,62 +105,93 @@ bool BaseNode::isActive(){
 }
 
 
+/*
+
+    int32 serverID = 1;
+    string hostname = 2;
+    string port = 3;
+    string type = 4;
+    int32 clusterID = 5;
+    bool isMaster = 6;
+
+*/
+
 class CoordServiceImpl final : public CoordService::Service {
 
     Status Heartbeat(ServerContext* context, const ServerInfo* serverinfo, Confirmation* confirmation) override {
         // Your code here
         // The cluster index starts from 0.
-
-
-        if (serverinfo -> type() == "synchronizer"){
-            std::cout << "Received heartbeat from synchronizer " << serverinfo -> serverid() << std::endl; // serverID is syncID here
-            // immediately return the request
+        int cluster_id = serverinfo -> clusterid() - 1;
+        if (cluster_id < 0 || cluster_id >= (int) clusters.size()){
+            LOG(ERROR) << "cluster_id not valid";
             return Status::OK;
         }
-        else{ // server - master or slave
-            int cluster_id = serverinfo -> clusterid() - 1;
-            std::cout << "Received heartbeat from server " << serverinfo -> serverid() << " in cluster " << cluster_id + 1 << std::endl;
-            // check whether the cluster_id is valid
-            if (cluster_id < 0 || cluster_id >= (int) clusters.size()){
-                // immediately return the request
-                LOG(ERROR) << "cluster_id not valid"; 
-                return Status::OK;
-            }
-            
-            zNode* node = new zNode();
-            node -> serverID = serverinfo -> serverid();
-            node -> hostname = serverinfo -> hostname();
-            node -> port = serverinfo -> port();
-            node -> type = serverinfo -> type();
-            node -> last_heartbeat = getTimeNow();
-            node -> missed_heartbeat = false;
-            
-            std::lock_guard<std::mutex> guard(v_mutex); // lock the mutex for thread safety
-            bool updated = false;
-            for (auto &s: clusters[cluster_id]){
-                // if serverID matches, update the heartbeat time
-                if (s -> serverID == node -> serverID){
-                    s -> last_heartbeat = node -> last_heartbeat;
-                    s -> missed_heartbeat = false;
+
+        bool isSync = (serverinfo -> type() == "synchronizer");
+        std::time_t now = getTimeNow();
+        //std::cout << "Received heartbeat from " << (isSync ? "synchronizer " : "server ") << serverinfo -> serverid() 
+        // << " in cluster " << cluster_id + 1 << std::endl;
+
+        std::lock_guard<std::mutex> guard(isSync ? sync_v_mutex : v_mutex);
+
+        bool updated = false;
+
+
+        // declare a BaseNode pointer for shared fields
+        BaseNode* node = nullptr;
+
+        if (isSync) {
+            auto* sync_node = new syncNode();
+            sync_node->syncID = serverinfo->serverid();
+            node = sync_node; // assign to base pointer
+        } else {
+            auto* z_node = new zNode();
+            z_node->serverID = serverinfo->serverid();
+            node = z_node;
+        }
+
+     
+        // shared initialization
+        node->hostname = serverinfo->hostname();
+        node->port = serverinfo->port();
+        node->type = serverinfo->type();
+        node->last_heartbeat = now;
+        node->missed_heartbeat = false;
+
+        if (isSync) { // synchornization node
+            for (auto& s : sync_clusters[cluster_id]) {
+                if (s->syncID == static_cast<syncNode*>(node)->syncID) {
+                    s->last_heartbeat = now;
+                    s->missed_heartbeat = false;
                     updated = true;
                     delete node;
                     break;
                 }
-                
             }
-            // The node doesn't exist in the cluster, add it
-            if (!updated){
-                clusters[cluster_id].push_back(node);
-                //std::cout << "pushed a new node into the cluster" << std::endl;
-                LOG(INFO) << "successfully writes " << node -> serverID <<  " to the coordinator cluster " <<  cluster_id;
+            if (!updated) {
+                sync_clusters[cluster_id].push_back(static_cast<syncNode*>(node));
+                LOG(INFO) << "Added synchronizer " << static_cast<syncNode*>(node)->syncID << " to cluster " << cluster_id;
             }
-            
-
-            //std::cout <<"heartbeat received..." << std::endl;
-            return Status::OK;
+        } else { // the server nodes
+            for (auto& s : clusters[cluster_id]) {
+                if (s->serverID == static_cast<zNode*>(node)->serverID) {
+                    s->last_heartbeat = now;
+                    s->missed_heartbeat = false;
+                    updated = true;
+                    delete node;
+                    break;
+                }
+            }
+            if (!updated) {
+                clusters[cluster_id].push_back(static_cast<zNode*>(node));
+                LOG(INFO) << "Added server " << static_cast<zNode*>(node)->serverID << " to cluster " << cluster_id;
+            }
         }
 
+        return Status::OK;
     }
+
+    
 
     //function returns the server information for requested client id
     //this function assumes there are always 3 clusters and has math
@@ -179,10 +210,16 @@ class CoordServiceImpl final : public CoordService::Service {
         //modulus operation
 
         int raw_id = id -> id();
-        int PORT_BASE = 10000;
-        if (raw_id >= PORT_BASE){ // Asking for the existence of slave
+        int PORT_SERVER = 10000;
+        int PORT_SYNC= 9000;
+        if (raw_id >= PORT_SYNC && raw_id < PORT_SERVER){
+             // Asking for the existence of synchronizer
+             int clusterId = (id -> id() / PORT_SYNC) - 1;
+             // If there is only one node in the cluster, may cause segmentation fault
+        }
+        else if (raw_id >= PORT_SERVER){ // Asking for the existence of slave
             // find the cluster, take out the inforamtion in the second node
-            int clusterId = (id -> id() / PORT_BASE) -1 ;
+            int clusterId = (id -> id() / PORT_SERVER) -1 ;
             // If there is only one node in the cluster, may cause segmentation fault
             if (clusters[clusterId].size() > 1) {
                 zNode* destServerInfo = clusters[clusterId][1];
