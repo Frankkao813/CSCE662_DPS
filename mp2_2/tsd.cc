@@ -287,7 +287,10 @@ class SNSServiceImpl final : public SNSService::Service {
         std::string coord_addr = server_config_.coordinatorIP + ":" + server_config_.coordinatorPort;
         auto channel = grpc::CreateChannel(coord_addr, grpc::InsecureChannelCredentials());
         coordinator_stub_ = CoordService::NewStub(channel);
-    }
+
+      }
+
+  
   }
   
   Status List(ServerContext* context, const Request* request, ListReply* list_reply) override {
@@ -409,6 +412,7 @@ class SNSServiceImpl final : public SNSService::Service {
     // was injected when the service was constructed.
     try {
       std::string server_folder = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/";
+      std::cout << server_folder << std::endl;
       std::filesystem::create_directories(server_folder);
       std::string user_file = server_folder +  "all_users.txt";
       std::ofstream out(user_file, std::ios::app);
@@ -422,16 +426,20 @@ class SNSServiceImpl final : public SNSService::Service {
 
     // mirror the same operation to slave
     // TODO: Implement mirroring logic here
-    std::string  slave_port = getSlaveAddrFromCoord(std::stoi(server_config_.port)); 
-    std::cout << "the server id is " << server_config_.serverId << std::endl;
-    if (server_config_.serverId == "1" && !slave_port.empty()){
-      std::cout << "We are sending message to slave port " << slave_port << std::endl;
+    // std::string  slave_port = getSlaveAddrFromCoord(std::stoi(server_config_.port)); 
+    // std::cout << "the server id is " << server_config_.serverId << std::endl;
+    getSlaveStub();
+    std::cout << "server id is " << server_config_.serverId << std::endl;
+    if (server_config_.serverId == "1" && slave_stub_){
+      std::cout << "About to log into the slave server"<< std::endl;
       Request req;
       req.set_username(uname);
       Reply rep;
       ClientContext ctx;
-      auto stub = SNSService::NewStub(grpc::CreateChannel(slave_port, grpc::InsecureChannelCredentials()));
-        Status s = stub->Login(&ctx, req, &rep);
+      Status s = slave_stub_->Login(&ctx, req, &rep);
+      if (!s.ok()) {
+        LOG(ERROR) << "Failed to mirror login to slave: " << s.error_message();
+      }
     }
 
     return Status::OK;
@@ -478,6 +486,7 @@ class SNSServiceImpl final : public SNSService::Service {
 
    private:
     ServerConfig server_config_;
+    std::unique_ptr<SNSService::Stub> slave_stub_;
     std::unique_ptr<CoordService::Stub> coordinator_stub_;
 
     // a private helper (master asking the address from slave)
@@ -498,6 +507,17 @@ class SNSServiceImpl final : public SNSService::Service {
       } else {
         LOG(ERROR) << "Failed to get server info from coordinator: " << s.error_message();
         return "";
+      }
+    }
+
+    void getSlaveStub(){
+      std::cout << "whether there are information to the slave stub" << !slave_stub_ << std::endl;
+      if (!slave_stub_ && server_config_.serverId == "1") {
+        std::string slave_addr = getSlaveAddrFromCoord(std::stoi(server_config_.port));
+        if (!slave_addr.empty()) {
+          auto slave_chan = grpc::CreateChannel(slave_addr, grpc::InsecureChannelCredentials());
+          slave_stub_ = SNSService::NewStub(slave_chan);
+        }
       }
     }
 
