@@ -438,6 +438,7 @@ int main(int argc, char **argv)
     return 0;
 }
 
+// TODO: syncID should be passed in by the program input, not the global variable
 void run_synchronizer(std::string coordIP, std::string coordPort, std::string port, int synchID, SynchronizerRabbitMQ &rabbitMQ)
 {
     // setup coordinator stub

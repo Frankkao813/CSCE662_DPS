@@ -349,8 +349,35 @@ class SNSServiceImpl final : public SNSService::Service {
 
 
     reply -> set_msg("Follow successful");
+    // write to file
+    try {
+      std::string server_folder = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/";
+      std::cout << server_folder << std::endl;
+      std::filesystem::create_directories(server_folder);
+      std::string user_file = server_folder + uname + "_follow_list.txt";
+      std::ofstream out(user_file, std::ios::app);
+      if (out) {
+        out << target << "\n"; // the username is written in the file
+      }
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "Failed to write user file: " << e.what();
+    }
 
 
+    // mirror the operation
+    getSlaveStub();
+    if (server_config_.serverId == "1" && slave_stub_){
+      std::cout << "About to follow on the slave server"<< std::endl;
+      Request req;
+      req.set_username(uname);
+      req.add_arguments(target);
+      Reply rep;
+      ClientContext ctx;
+      Status s = slave_stub_->Follow(&ctx, req, &rep);
+      if (!s.ok()) {
+        LOG(ERROR) << "Failed to mirror follow to slave: " << s.error_message();
+      }
+    }
 
     return Status::OK; 
   }
