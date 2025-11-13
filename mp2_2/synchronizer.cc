@@ -415,7 +415,21 @@ int main(int argc, char **argv)
     log(INFO, "Logging Initialized. Server starting...");
 
     coordAddr = coordIP + ":" + coordPort;
-    clusterID = ((synchID - 1) % 3) + 1;
+    const int numClusters = 3;
+    clusterID = ((synchID - 1) % numClusters) + 1;
+
+
+    // caluclate position in cluster
+    int posInCluster = ((synchID - 1) / numClusters);
+    if (posInCluster == 0){
+        isMaster = true;
+        clusterSubdirectory = "1";
+    }
+    else{
+        isMaster = false;
+        clusterSubdirectory = "2";
+    }
+
     ServerInfo serverInfo;
     serverInfo.set_hostname("localhost");
     serverInfo.set_port(port);
@@ -426,6 +440,7 @@ int main(int argc, char **argv)
 
     // start the hearbeat thread
     // () mutable: allowed to modify captured variables
+    // TODO: This might be altered by global variable 
     std::thread hb_thread([coordIP, coordPort, serverInfo, synchID]() mutable {
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(5));

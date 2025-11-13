@@ -213,7 +213,7 @@ class CoordServiceImpl final : public CoordService::Service {
         int PORT_SERVER = 10000;
         int PORT_SYNC= 9000;
         if (raw_id >= PORT_SYNC && raw_id < PORT_SERVER){
-             // Asking for the existence of synchronizer
+             // TODO: The logic is a little different here (from the server nodes)
              int clusterId = (id -> id() / PORT_SYNC) - 1;
              // If there is only one node in the cluster, may cause segmentation fault
         }
