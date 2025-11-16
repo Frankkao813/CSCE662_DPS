@@ -416,6 +416,15 @@ int main(int argc, char **argv)
 
     coordAddr = coordIP + ":" + coordPort;
     const int numClusters = 3;
+    /*
+        justification:
+        i = 1 -> clusterID = 1
+        i = 2 -> clusterID = 2
+        i = 3 -> clusterID = 3
+        i = 4 -> clusterID = 1
+        i = 5 -> clusterID = 2
+        i = 6 -> clusterID = 3
+    */
     clusterID = ((synchID - 1) % numClusters) + 1;
 
 

@@ -579,6 +579,7 @@ void sendHeartbeat(const ServerConfig& config){
         server_info.set_type("slave");
     }
     server_info.set_clusterid(std::stoi(config.clusterId));
+    std::cout << "Sending heartbeat from server " << config.serverId << std::endl;
 
     Confirmation confirmation;
     grpc::ClientContext context;
@@ -587,9 +588,11 @@ void sendHeartbeat(const ServerConfig& config){
     // add informative message from client to recipient
     if (!status.ok()){
       LOG(ERROR) << "Heartbeat failed to send from server " + config.serverId + ": " + status.error_message();
+      std::cerr << "Heartbeat failed to send from server " + config.serverId + ": " + status.error_message() << std::endl;
     }
     else {
       LOG(INFO) << "heartbeat sent successfully from server " + config.serverId;
+      std::cout << "Heartbeat sent successfully from server " + config.serverId << std::endl;
     }
 
     std::this_thread::sleep_for(std::chrono::seconds(5));

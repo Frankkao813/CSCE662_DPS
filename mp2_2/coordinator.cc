@@ -121,6 +121,8 @@ class CoordServiceImpl final : public CoordService::Service {
     Status Heartbeat(ServerContext* context, const ServerInfo* serverinfo, Confirmation* confirmation) override {
         // Your code here
         // The cluster index starts from 0.
+        
+
         int cluster_id = serverinfo -> clusterid() - 1;
         if (cluster_id < 0 || cluster_id >= (int) clusters.size()){
             LOG(ERROR) << "cluster_id not valid";
@@ -129,10 +131,11 @@ class CoordServiceImpl final : public CoordService::Service {
 
         bool isSync = (serverinfo -> type() == "synchronizer");
         std::time_t now = getTimeNow();
-        //std::cout << "Received heartbeat from " << (isSync ? "synchronizer " : "server ") << serverinfo -> serverid() 
-        // << " in cluster " << cluster_id + 1 << std::endl;
+        std::cout << "Received heartbeat from " << (isSync ? "synchronizer " : "server ") << serverinfo -> serverid() 
+        << " in cluster " << cluster_id + 1 << std::endl;
 
         std::lock_guard<std::mutex> guard(isSync ? sync_v_mutex : v_mutex);
+        std::cout << "entered mutex" << std::endl;
 
         bool updated = false;
 
@@ -157,6 +160,9 @@ class CoordServiceImpl final : public CoordService::Service {
         node->type = serverinfo->type();
         node->last_heartbeat = now;
         node->missed_heartbeat = false;
+
+        std::cout << "Received heartbeat from " << (isSync ? "synchronizer " : "server ") << serverinfo->serverid() 
+        << " in cluster " << cluster_id + 1 << std::endl;
 
         if (isSync) { // synchornization node
             for (auto& s : sync_clusters[cluster_id]) {
@@ -198,7 +204,6 @@ class CoordServiceImpl final : public CoordService::Service {
     //hardcoded to represent this.
     Status GetServer(ServerContext* context, const ID* id, ServerInfo* serverinfo) override {
         // Your code here
-        //std::cout<< "OKay!" << std::endl;
 
         // link back to the serverinfo the send the message
         /*
@@ -215,7 +220,8 @@ class CoordServiceImpl final : public CoordService::Service {
         if (raw_id >= PORT_SYNC && raw_id < PORT_SERVER){
              // TODO: The logic is a little different here (from the server nodes)
              int clusterId = (id -> id() / PORT_SYNC) - 1;
-             // If there is only one node in the cluster, may cause segmentation fault
+             // Does follower synchronizer master needs to know where the slave is?
+             // Master may not need to know this information, will change the structure later.
         }
         else if (raw_id >= PORT_SERVER){ // Asking for the existence of slave
             // find the cluster, take out the inforamtion in the second node
@@ -325,32 +331,42 @@ int main(int argc, char** argv) {
 }
 
 
-
-void checkHeartbeat(){
-    while(true){
-        //check servers for heartbeat > 10
-        //if true turn missed heartbeat = true
-
-        v_mutex.lock();
-
-        for (auto& c : clusters){
-            for(auto& s : c){
-                if(difftime(getTimeNow(),s->last_heartbeat)>10){
-                    std::cout << "missed heartbeat from server " << s->serverID << std::endl;
-                    if(!s->missed_heartbeat){
-                        s->missed_heartbeat = true;
-                        s->last_heartbeat = getTimeNow();
+template<typename NodeT>
+void checkHeartbeatGeneric(std::vector<std::vector<NodeT*>>& clusters_vec,
+                           std::mutex& mtx,
+                           std::function<int(NodeT*)> getId,
+                           const std::string& label) {
+    while (true) {
+        // // We release the lock when the thread is sleeping
+        // holding the lock when it sleep will cause lock contention + blocking
+        { 
+            std::lock_guard<std::mutex> guard(mtx);
+            for (auto& cluster : clusters_vec) {
+                for (auto& node : cluster) {
+                    if (difftime(getTimeNow(), node->last_heartbeat) > 10) {
+                        std::cout << "missed heartbeat from " << label << " " << getId(node) << std::endl;
+                        if (!node->missed_heartbeat) {
+                            node->missed_heartbeat = true;
+                            node->last_heartbeat = getTimeNow();
+                        }
                     }
                 }
             }
         }
-
-        v_mutex.unlock();
-
-        sleep(5); // check every 5 second...
+        sleep(5);
     }
 }
 
+// from generic template to more specific templates
+void checkHeartbeat() {
+    checkHeartbeatGeneric<zNode>(clusters, v_mutex,
+        [](zNode* n){ return n->serverID; }, "server");
+}
+
+void checkSyncHeartbeat() {
+    checkHeartbeatGeneric<syncNode>(sync_clusters, sync_v_mutex,
+        [](syncNode* n){ return n->syncID; }, "synchronizer");
+}
 
 std::time_t getTimeNow(){
     return std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
