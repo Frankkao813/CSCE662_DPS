@@ -131,11 +131,10 @@ class CoordServiceImpl final : public CoordService::Service {
 
         bool isSync = (serverinfo -> type() == "synchronizer");
         std::time_t now = getTimeNow();
-        std::cout << "Received heartbeat from " << (isSync ? "synchronizer " : "server ") << serverinfo -> serverid() 
-        << " in cluster " << cluster_id + 1 << std::endl;
+
 
         std::lock_guard<std::mutex> guard(isSync ? sync_v_mutex : v_mutex);
-        std::cout << "entered mutex" << std::endl;
+        //std::cout << "entered mutex" << std::endl;
 
         bool updated = false;
 
@@ -161,8 +160,7 @@ class CoordServiceImpl final : public CoordService::Service {
         node->last_heartbeat = now;
         node->missed_heartbeat = false;
 
-        std::cout << "Received heartbeat from " << (isSync ? "synchronizer " : "server ") << serverinfo->serverid() 
-        << " in cluster " << cluster_id + 1 << std::endl;
+
 
         if (isSync) { // synchornization node
             for (auto& s : sync_clusters[cluster_id]) {

@@ -159,9 +159,8 @@ google::protobuf::Timestamp toProtoTimestamp(const std::string& datetime) {
     return ts;
 }
 
-bool append_to_file(const std::string& filename, const std::string& content) {
-    std::string folder = "user";
-    std::filesystem::create_directories(folder);  // make sure "user" exists
+bool append_to_file(const std::string& folder, const std::string& filename, const std::string& content) {
+    std::filesystem::create_directories(folder);  // make sure the folder exists
 
     std::string full_path = folder + "/" + filename;
     // std::cout << "the full path to write is..." << full_path << std::endl;
@@ -231,11 +230,15 @@ std::vector<Message> recent_20_messages(std::string username){
 
 }
 
-bool on_receiving_message(const Message& m, Client* c) {
+bool on_receiving_message(const Message& m, Client* c, ServerConfig config) {
+    std::cout << "entering server " << config.serverId << " cluster id" << config.clusterId << std::endl;
+    std::cout << "the user that is posting is " << m.username() << std::endl;
     if (!c) return false;
     const std::string& username = m.username();  // or however you store it
     const std::string post = format_file_output(m.timestamp(), username, m.msg());
-    bool ok = append_to_file(username + ".txt", post);
+    std::string basefolder = "./cluster/" + config.clusterId + "/" + config.serverId + "/";
+    std::cout << "appending to " << basefolder + "/" + username + ".txt" << std::endl;
+    bool ok = append_to_file(basefolder, username + ".txt", post);
     // loop through the follower of the particular user
     for (Client* follower : c->client_followers) {
         if (!follower) continue;
@@ -248,8 +251,11 @@ bool on_receiving_message(const Message& m, Client* c) {
             *out.mutable_timestamp() = ts; 
             follower->stream->Write(out);
         }
-        ok = append_to_file(follower->username + "_following.txt", post) && ok;
+        ok = append_to_file(basefolder, follower->username + "_following.txt", post) && ok;
     }
+
+
+
     return ok;
 }
 
@@ -490,24 +496,68 @@ class SNSServiceImpl final : public SNSService::Service {
     }
 
 
+    // Only master talks to slave
+    bool isMaster = (server_config_.serverId == "1");
+    bool slave_initialized = false;
+    std::unique_ptr<grpc::ClientReaderWriter<Message, Message>> slave_stream;
+    std::unique_ptr<ClientContext> slave_ctx;
+
+
     // read the rest of the message
     Message m;
-    while (stream -> Read(&m)){
-      std::string uname = m.username();
-      Client* c = findClientByName(uname);
-      c -> stream = stream; // initialize stream
-      /* std::string format_file_output(const google.protobuf.Timestamp& ts,
-                              const std::string& username,
-                              const Message& m) */
-      on_receiving_message(m, c);
 
-      
 
+    while (stream->Read(&m)) {
+        std::string uname = m.username();
+        Client* c = findClientByName(uname);
+        c->stream = stream;  // register client stream
+
+        on_receiving_message(m, c, server_config_);
+
+        // Persistent replication to slave
+        if (isMaster) {
+            getSlaveStub();      
+
+            if (slave_stub_) {
+                // Initialize slave stream once, on first message
+                if (!slave_initialized) {
+                    slave_ctx = std::make_unique<ClientContext>();
+                    slave_stream = slave_stub_->Timeline(slave_ctx.get());
+
+                    if (!slave_stream) {
+                        LOG(ERROR) << "Failed to create slave Timeline stream";
+                    } else {
+                        // Send ident once
+                        Message ident;
+                        ident.set_username(uname); // or some special ID
+                        if (!slave_stream->Write(ident)) {
+                            LOG(ERROR) << "Failed to send ident to slave";
+                        } else {
+                            slave_initialized = true;
+                        }
+                    }
+                }
+
+                // If the stream is ready, mirror this message
+                if (slave_initialized && slave_stream) {
+                    bool ok = slave_stream->Write(m);
+                    if (!ok) {
+                        LOG(ERROR) << "Failed to mirror message to slave";
+                    }
+                }
+            }
+        }
     }
 
+    // client closed Timeline; clean up slave stream if we opened one
+    if (isMaster && slave_initialized && slave_stream) {
+        slave_stream->WritesDone();
+        grpc::Status s = slave_stream->Finish();
+        if (!s.ok()) {
+            LOG(ERROR) << "Slave Timeline finished with error: " << s.error_message();
+        }
+    }
 
-
-    
     return Status::OK;
     }
 
@@ -588,11 +638,11 @@ void sendHeartbeat(const ServerConfig& config){
     // add informative message from client to recipient
     if (!status.ok()){
       LOG(ERROR) << "Heartbeat failed to send from server " + config.serverId + ": " + status.error_message();
-      std::cerr << "Heartbeat failed to send from server " + config.serverId + ": " + status.error_message() << std::endl;
+      //std::cerr << "Heartbeat failed to send from server " + config.serverId + ": " + status.error_message() << std::endl;
     }
     else {
       LOG(INFO) << "heartbeat sent successfully from server " + config.serverId;
-      std::cout << "Heartbeat sent successfully from server " + config.serverId << std::endl;
+      //std::cout << "Heartbeat sent successfully from server " + config.serverId << std::endl;
     }
 
     std::this_thread::sleep_for(std::chrono::seconds(5));
