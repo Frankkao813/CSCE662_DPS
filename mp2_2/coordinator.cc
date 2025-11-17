@@ -269,7 +269,37 @@ class CoordServiceImpl final : public CoordService::Service {
         return Status::OK;
     }
 
+    Status GetAllFollowerServers(ServerContext* context, const ID* id, ServerList* followerServers) override {
+        // Your code here
+        // This function should populate the followerServers with the list of follower servers for the given ID
+        // For now, just return OK without doing anything
+        /*
+        message ServerList{
+            repeated int32 serverID = 1;
+            repeated string hostname = 2;
+            repeated string port = 3;
+            repeated string type = 4; // the type is always follower
+        }
 
+        */
+
+        // fetch from the std::vector<std::vector<syncNode*>> sync_clusters = {sync_cluster1, sync_cluster2, sync_cluster3};
+        for (const auto& cluster : sync_clusters) {
+            for (const auto& node : cluster) {
+                std::cout << "basic info: " << node->syncID << ", " << node->hostname << ", " << node->port << ", " << node->type << std::endl;
+                if (node->type == "synchronizer") {
+                    followerServers->add_serverid(node->syncID);
+                    followerServers->add_hostname(node->hostname);
+                    followerServers->add_port(node->port);
+                    followerServers->add_type(node->type);
+                    std::cout << "Added follower server: " << node->hostname << ":" << node->port << std::endl;
+                }
+            }
+        }
+
+        std::cout << "Completed populating follower servers." << std::endl;
+        return Status::OK;
+    }
 };
 
 void RunServer(std::string port_no){

@@ -409,7 +409,7 @@ int main(int argc, char **argv)
 
 
 
-
+    //TODO: populate global variables
     std::string log_file_name = std::string("synchronizer-") + port;
     google::InitGoogleLogging(log_file_name.c_str());
     log(INFO, "Logging Initialized. Server starting...");
@@ -463,13 +463,18 @@ int main(int argc, char **argv)
 }
 
 // TODO: syncID should be passed in by the program input, not the global variable
+
+// overall workflow: 
 void run_synchronizer(std::string coordIP, std::string coordPort, std::string port, int synchID, SynchronizerRabbitMQ &rabbitMQ)
 {
     // setup coordinator stub
+    std::cout << "Setting up coordinator stub at " << coordIP << ":" << coordPort << std::endl;
+    std::cout << "entered synchronizer" << std::endl;
     std::string target_str = coordIP + ":" + coordPort;
     std::unique_ptr<CoordService::Stub> coord_stub_;
     coord_stub_ = std::unique_ptr<CoordService::Stub>(CoordService::NewStub(grpc::CreateChannel(target_str, grpc::InsecureChannelCredentials())));
 
+    // // This part seems to be redundant
     ServerInfo msg;
     Confirmation c;
 
@@ -490,7 +495,28 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
         id.set_id(synchID);
 
         // making a request to the coordinator to see count of follower synchronizers
-        coord_stub_->GetAllFollowerServers(&context, id, &followerServers);
+        //coord_stub_->GetAllFollowerServers(&context, id, &followerServers);
+
+        // ...existing code...
+        // making a request to the coordinator to see count of follower synchronizers
+        std::cout << "Making GetAllFollowerServers RPC call" << std::endl;
+        grpc::Status status = coord_stub_->GetAllFollowerServers(&context, id, &followerServers);
+        if (!status.ok()) {
+            log(ERROR, "GetAllFollowerServers RPC failed: " + status.error_message());
+            std::cout << "GetAllFollowerServers RPC failed: " << status.error_message() << std::endl;
+        } else {
+            int n = followerServers.serverid_size();
+            log(INFO, "GetAllFollowerServers success; returned " + std::to_string(n) + " server(s)");
+            for (int i = 0; i < n; ++i) {
+                log(INFO, "  follower id=" + std::to_string(followerServers.serverid(i))
+                          + " host=" + followerServers.hostname(i)
+                          + " port=" + followerServers.port(i));
+                std::cout << "  follower id=" << followerServers.serverid(i)
+                          << " host=" << followerServers.hostname(i)
+                          << " port=" << followerServers.port(i) << std::endl;
+            }
+        }
+ // ...existing code...
 
         std::vector<int> server_ids;
         std::vector<std::string> hosts, ports;
@@ -508,7 +534,7 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
         }
 
         // update the count of how many follower sychronizer processes the coordinator has registered
-
+        total_number_of_registered_synchronizers = followerServers.serverid_size();
         // below here, you run all the update functions that synchronize the state across all the clusters
         // make any modifications as necessary to satisfy the assignments requirements
 

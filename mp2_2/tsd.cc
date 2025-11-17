@@ -237,8 +237,8 @@ bool on_receiving_message(const Message& m, Client* c, ServerConfig config) {
     const std::string& username = m.username();  // or however you store it
     const std::string post = format_file_output(m.timestamp(), username, m.msg());
     std::string basefolder = "./cluster/" + config.clusterId + "/" + config.serverId + "/";
-    std::cout << "appending to " << basefolder + "/" + username + ".txt" << std::endl;
-    bool ok = append_to_file(basefolder, username + ".txt", post);
+    std::cout << "appending to " << basefolder + "/" + username + "_timeline.txt" << std::endl;
+    bool ok = append_to_file(basefolder, username + "_timeline.txt", post);
     // loop through the follower of the particular user
     for (Client* follower : c->client_followers) {
         if (!follower) continue;
