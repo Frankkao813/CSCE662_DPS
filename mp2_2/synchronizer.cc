@@ -83,6 +83,32 @@ std::vector<std::string> get_tl_or_fl(int, int, bool);
 std::vector<std::string> getFollowersOfUser(int);
 bool file_contains_user(std::string filename, std::string user);
 
+struct SynchronizerRegistry{
+    std::mutex mu;
+    std::vector<int> server_ids;
+    std::vector<std::string> hosts;
+    std::vector<std::string> ports;
+
+    void updateFromServerList(const ServerList &sl) {
+        std::lock_guard<std::mutex> lk(mu);
+        server_ids.assign(sl.serverid().begin(), sl.serverid().end());
+        hosts.assign(sl.hostname().begin(), sl.hostname().end());
+        ports.assign(sl.port().begin(), sl.port().end());
+    }
+
+    void snapshot(std::vector<int> &out_ids,
+                  std::vector<std::string> &out_hosts,
+                  std::vector<std::string> &out_ports) {
+        std::lock_guard<std::mutex> lk(mu);
+        out_ids = server_ids;
+        out_hosts = hosts;
+        out_ports = ports;
+    }
+
+};
+
+SynchronizerRegistry synchRegistry;
+
 void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInfo serverInfo, int syncID);
 
 std::unique_ptr<csce438::CoordService::Stub> coordinator_stub_;
@@ -155,6 +181,7 @@ public:
     void publishUserList()
     {
         std::vector<std::string> users = get_all_users_func(synchID);
+        std::cout << "we are publishing user list from synchronizer " << synchID << " with " << users.size() << " users." << std::endl;
         std::sort(users.begin(), users.end());
         Json::Value userList;
         for (const auto &user : users)
@@ -507,30 +534,27 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
         } else {
             int n = followerServers.serverid_size();
             log(INFO, "GetAllFollowerServers success; returned " + std::to_string(n) + " server(s)");
-            for (int i = 0; i < n; ++i) {
-                log(INFO, "  follower id=" + std::to_string(followerServers.serverid(i))
-                          + " host=" + followerServers.hostname(i)
-                          + " port=" + followerServers.port(i));
-                std::cout << "  follower id=" << followerServers.serverid(i)
-                          << " host=" << followerServers.hostname(i)
-                          << " port=" << followerServers.port(i) << std::endl;
-            }
+            // for (int i = 0; i < n; ++i) {
+            //     // log(INFO, "  follower id=" + std::to_string(followerServers.serverid(i))
+            //     //           + " host=" + followerServers.hostname(i)
+            //     //           + " port=" + followerServers.port(i));
+            //     std::cout << "  follower id=" << followerServers.serverid(i)
+            //               << " host=" << followerServers.hostname(i)
+            //               << " port=" << followerServers.port(i) << std::endl;
+            // }
         }
+        synchRegistry.updateFromServerList(followerServers);
  // ...existing code...
 
         std::vector<int> server_ids;
         std::vector<std::string> hosts, ports;
-        for (std::string host : followerServers.hostname())
+        synchRegistry.snapshot(server_ids, hosts, ports);
+
+
+        // print out the vector
+        for (int i = 0; i < server_ids.size(); i++)
         {
-            hosts.push_back(host);
-        }
-        for (std::string port : followerServers.port())
-        {
-            ports.push_back(port);
-        }
-        for (int serverid : followerServers.serverid())
-        {
-            server_ids.push_back(serverid);
+            std::cout << "Follower Synchronizer " << server_ids[i] << ": " << hosts[i] << ":" << ports[i] << std::endl;
         }
 
         // update the count of how many follower sychronizer processes the coordinator has registered
@@ -633,8 +657,15 @@ std::vector<std::string> get_all_users_func(int synchID)
     // std::string master_users_file = "./master"+std::to_string(synchID)+"/all_users";
     // std::string slave_users_file = "./slave"+std::to_string(synchID)+"/all_users";
     std::string clusterID = std::to_string(((synchID - 1) % 3) + 1);
-    std::string master_users_file = "./cluster_" + clusterID + "/1/all_users.txt";
-    std::string slave_users_file = "./cluster_" + clusterID + "/2/all_users.txt";
+    std::string master_users_file = "./cluster/" + clusterID + "/1/all_users.txt";
+    std::string slave_users_file = "./cluster/" + clusterID + "/2/all_users.txt";
+    
+    // print once per process (thread-safe)
+    static std::once_flag once;
+    std::call_once(once, [&]{
+        std::cout << "the master file we are taking from is " << master_users_file << std::endl;
+    });
+    
     // take longest list and package into AllUsers message
     std::vector<std::string> master_user_list = get_lines_from_file(master_users_file);
     std::vector<std::string> slave_user_list = get_lines_from_file(slave_users_file);

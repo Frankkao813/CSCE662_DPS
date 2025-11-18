@@ -221,7 +221,7 @@ class CoordServiceImpl final : public CoordService::Service {
              // Does follower synchronizer master needs to know where the slave is?
              // Master may not need to know this information, will change the structure later.
         }
-        else if (raw_id >= PORT_SERVER){ // Asking for the existence of slave
+        else if (raw_id >= PORT_SERVER){ // For the master server inquring the location of slave
             // find the cluster, take out the inforamtion in the second node
             int clusterId = (id -> id() / PORT_SERVER) -1 ;
             // If there is only one node in the cluster, may cause segmentation fault
@@ -240,7 +240,7 @@ class CoordServiceImpl final : public CoordService::Service {
             }
 
         }
-        else {
+        else { // For the client to get the server
 
             int clusterId = ((id -> id() - 1) % 3);
             int serverIndex = 0; // There is always one entry in each znode, will be updated later...
