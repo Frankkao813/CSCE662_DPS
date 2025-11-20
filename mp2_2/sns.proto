@@ -40,6 +40,7 @@ service SNSService {
   rpc List(Request) returns (ListReply) {}
   rpc Follow(Request) returns (Reply) {}
   rpc UnFollow(Request) returns (Reply) {}
+  rpc ReloadAllUsers(Empty) returns (CoordConfirmation) {}
   // Bidirectional streaming RPC
   rpc Timeline(stream Message) returns (stream Message) {}
 }
@@ -63,4 +64,14 @@ message Message {
   string msg = 2;
   // Time the message was sent
   google.protobuf.Timestamp timestamp = 3;
+}
+
+message Empty {}
+
+
+message CoordConfirmation{
+  // status
+  bool success = 1;
+  // message
+  string msg = 2;
 }

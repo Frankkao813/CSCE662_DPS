@@ -67,11 +67,14 @@ using grpc::ServerWriter;
 using grpc::Status;
 // tl = timeline, fl = follow list
 using csce438::TLFL;
+using csce438::SNSService; // connect coordinator -> server
+using csce438::Empty;
+using csce438::CoordConfirmation;
 
 int synchID = 1;
 int clusterID = 1;
 bool isMaster = false;
-int total_number_of_registered_synchronizers = 6; // update this by asking coordinator
+int total_number_of_registered_synchronizers; // update this by asking coordinator
 std::string coordAddr;
 std::string clusterSubdirectory;
 std::vector<std::string> otherHosts;
@@ -112,6 +115,7 @@ SynchronizerRegistry synchRegistry;
 void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInfo serverInfo, int syncID);
 
 std::unique_ptr<csce438::CoordService::Stub> coordinator_stub_;
+void notifyServersToReloadUsers();   // forward declaration
 
 class SynchronizerRabbitMQ
 {
@@ -195,13 +199,15 @@ public:
 
     void consumeUserLists()
     {
+        std::cerr << "consumeUserLists() entered for synchID=" << synchID << std::endl;
         std::vector<std::string> allUsers;
         // YOUR CODE HERE
 
         // TODO: while the number of synchronizers is harcorded as 6 right now, you need to change this
         // to use the correct number of follower synchronizers that exist overall
         // accomplish this by making a gRPC request to the coordinator asking for the list of all follower synchronizers registered with it
-        for (int i = 1; i <= 6; i++)
+        std::cerr << "total_number_of_registered_synchronizers = " << total_number_of_registered_synchronizers << std::endl;
+        for (int i = 1; i <= total_number_of_registered_synchronizers; i++)
         {
             std::string queueName = "synch" + std::to_string(i) + "_users_queue";
             std::string message = consumeMessage(queueName, 1000); // 1 second timeout
@@ -218,6 +224,7 @@ public:
                 }
             }
         }
+        std::cerr << "go to update all users file with " << allUsers.size() << " users." << std::endl;
         updateAllUsersFile(allUsers);
     }
 
@@ -255,7 +262,7 @@ public:
         // YOUR CODE HERE
 
         // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
-        for (int i = 1; i <= 6; i++)
+        for (int i = 1; i <= total_number_of_registered_synchronizers; i++)
         {
 
             std::string queueName = "synch" + std::to_string(i) + "_clients_relations_queue";
@@ -339,7 +346,7 @@ private:
     void updateAllUsersFile(const std::vector<std::string> &users)
     {
 
-        std::string usersFile = "./cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/all_users.txt";
+        std::string usersFile = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/all_users.txt";
         std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_all_users.txt";
         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
 
@@ -352,6 +359,11 @@ private:
             }
         }
         sem_close(fileSem);
+
+
+        // here, send a grpc requerst to the server to updat client_db
+        std::cerr << "Notifying servers to reload user lists..." << std::endl;
+        notifyServersToReloadUsers();
     }
 };
 
@@ -558,7 +570,8 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
         }
 
         // update the count of how many follower sychronizer processes the coordinator has registered
-        total_number_of_registered_synchronizers = followerServers.serverid_size();
+        total_number_of_registered_synchronizers = server_ids.size();
+        std::cout << "total_number_of_registered_synchronizers = " << total_number_of_registered_synchronizers << std::endl;
         // below here, you run all the update functions that synchronize the state across all the clusters
         // make any modifications as necessary to satisfy the assignments requirements
 
@@ -680,8 +693,8 @@ std::vector<std::string> get_tl_or_fl(int synchID, int clientID, bool tl)
 {
     // std::string master_fn = "./master"+std::to_string(synchID)+"/"+std::to_string(clientID);
     // std::string slave_fn = "./slave"+std::to_string(synchID)+"/" + std::to_string(clientID);
-    std::string master_fn = "cluster_" + std::to_string(clusterID) + "/1/" + std::to_string(clientID);
-    std::string slave_fn = "cluster_" + std::to_string(clusterID) + "/2/" + std::to_string(clientID);
+    std::string master_fn = "cluster/" + std::to_string(clusterID) + "/1/" + std::to_string(clientID);
+    std::string slave_fn = "cluster/" + std::to_string(clusterID) + "/2/" + std::to_string(clientID);
     if (tl)
     {
         master_fn.append("_timeline.txt");
@@ -714,16 +727,42 @@ std::vector<std::string> getFollowersOfUser(int ID)
 
     for (auto userID : usersInCluster)
     { // Examine each user's following file
-        std::string file = "cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + userID + "_follow_list.txt";
+        // if 1 follows 2, 3, 4, there should be 2, 3, 4 in 1_follow_list.txt
+        std::string file = "cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + userID + "_follow_list.txt";
         std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + userID + "_follow_list.txt";
         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
-        // std::cout << "Reading file " << file << std::endl;
+        //std::cout << "Reading file " << file << std::endl;
         if (file_contains_user(file, clientID))
         {
             followers.push_back(userID);
+            std::cout << "User " << userID << " follows " << clientID << std::endl;
         }
         sem_close(fileSem);
+
     }
 
     return followers;
+}
+
+
+void notifyServersToReloadUsers(){
+    std::string host = "localhost";
+    std::string port = "10000"; // assuming server is running on 3028
+    std::cout << "Notifying server at " << host << ":" << port << " to reload user lists." << std::endl;
+    auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
+    std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
+
+    Empty req;
+    CoordConfirmation resp;
+    ClientContext context;
+
+    Status status = stub->ReloadAllUsers(&context, req, &resp);
+
+    if (!status.ok()) {
+        log(ERROR, "ReloadAllUsers RPC failed: " + status.error_message());
+        std::cout << "ReloadAllUsers RPC failed: " << status.error_message() << std::endl;
+    } else {
+        log(INFO, "ReloadAllUsers RPC succeeded");
+        std::cout << "ReloadAllUsers RPC succeeded" << std::endl;
+    }
 }

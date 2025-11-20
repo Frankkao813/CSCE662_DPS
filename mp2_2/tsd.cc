@@ -75,6 +75,12 @@ using csce438::CoordService; // newly_added
 using csce438::ID; // newly added
 using grpc::ClientContext; // newly added
 
+
+
+// connecting the coordinator to server
+using csce438::Empty;
+using csce438::CoordConfirmation;
+
 struct Client {
   std::string username;
   bool connected = true;
@@ -561,6 +567,13 @@ class SNSServiceImpl final : public SNSService::Service {
     return Status::OK;
     }
 
+    // 
+  Status ReloadAllUsers(ServerContext* context, const Empty* request, CoordConfirmation* reply) override {
+    std::cout << "ReloadAllUsers called" << std::endl;
+    return Status::OK;
+    
+  }
+
    private:
     ServerConfig server_config_;
     std::unique_ptr<SNSService::Stub> slave_stub_;
@@ -719,4 +732,10 @@ int main(int argc, char** argv) {
   return 0;
 }
 
+
+
+// TODO: How to see that the user file list is changed? 
+// we have to update the data structure in the server, so that
+// when the follow requst cames, the server won't compllain that the people
+// is non-existent
 
