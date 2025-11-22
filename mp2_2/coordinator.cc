@@ -22,6 +22,11 @@
 #include <grpc++/grpc++.h>
 #include <glog/logging.h>
 
+#include <semaphore.h>   // sem_t, sem_open, sem_wait, sem_post, sem_close
+#include <fcntl.h>       // O_CREAT, O_EXCL, etc.
+#include <sys/stat.h>    
+
+
 #include "coordinator.grpc.pb.h"
 #include "coordinator.pb.h"
 
@@ -292,7 +297,7 @@ class CoordServiceImpl final : public CoordService::Service {
                     followerServers->add_hostname(node->hostname);
                     followerServers->add_port(node->port);
                     followerServers->add_type(node->type);
-                    std::cout << "Added follower server: " << node->hostname << ":" << node->port << std::endl;
+                    //std::cout << "Added follower server: " << node->hostname << ":" << node->port << std::endl;
                 }
             }
         }

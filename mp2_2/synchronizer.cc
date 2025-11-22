@@ -115,7 +115,7 @@ SynchronizerRegistry synchRegistry;
 void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInfo serverInfo, int syncID);
 
 std::unique_ptr<csce438::CoordService::Stub> coordinator_stub_;
-void notifyServersToReloadUsers();   // forward declaration
+void notifyServersToReloadUsers(std::string clusterID, std::string clusterSubdirectory);  // forward declaration
 
 class SynchronizerRabbitMQ
 {
@@ -201,15 +201,14 @@ public:
     {
         std::cerr << "consumeUserLists() entered for synchID=" << synchID << std::endl;
         std::vector<std::string> allUsers;
-        // YOUR CODE HERE
 
-        // TODO: while the number of synchronizers is harcorded as 6 right now, you need to change this
-        // to use the correct number of follower synchronizers that exist overall
-        // accomplish this by making a gRPC request to the coordinator asking for the list of all follower synchronizers registered with it
-        std::cerr << "total_number_of_registered_synchronizers = " << total_number_of_registered_synchronizers << std::endl;
-        for (int i = 1; i <= total_number_of_registered_synchronizers; i++)
+        std::vector<int> server_ids;
+        std::vector<std::string> hosts, ports;
+        synchRegistry.snapshot(server_ids, hosts, ports);
+
+        for (int id : server_ids)
         {
-            std::string queueName = "synch" + std::to_string(i) + "_users_queue";
+            std::string queueName = "synch" + std::to_string(id) + "_users_queue";
             std::string message = consumeMessage(queueName, 1000); // 1 second timeout
             if (!message.empty())
             {
@@ -260,12 +259,17 @@ public:
         std::vector<std::string> allUsers = get_all_users_func(synchID);
 
         // YOUR CODE HERE
+        std::vector<int> server_ids;
+        std::vector<std::string> hosts, ports;
+        synchRegistry.snapshot(server_ids, hosts, ports);
+
+        std::cerr << "consuming user lists from " << server_ids.size() << " synchronizers\n";
 
         // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
-        for (int i = 1; i <= total_number_of_registered_synchronizers; i++)
+        for (int id : server_ids)
         {
 
-            std::string queueName = "synch" + std::to_string(i) + "_clients_relations_queue";
+            std::string queueName = "synch" + std::to_string(id) + "_clients_relations_queue";
             std::string message = consumeMessage(queueName, 1000); // 1 second timeout
 
             if (!message.empty())
@@ -276,7 +280,7 @@ public:
                 {
                     for (const auto &client : allUsers)
                     {
-                        std::string followerFile = "./cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + client + "_followers.txt";
+                        std::string followerFile = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + client + "_followers.txt";
                         std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + client + "_followers.txt";
                         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
 
@@ -363,7 +367,7 @@ private:
 
         // here, send a grpc requerst to the server to updat client_db
         std::cerr << "Notifying servers to reload user lists..." << std::endl;
-        notifyServersToReloadUsers();
+        notifyServersToReloadUsers( std::to_string(clusterID), clusterSubdirectory);
     }
 };
 
@@ -745,9 +749,18 @@ std::vector<std::string> getFollowersOfUser(int ID)
 }
 
 
-void notifyServersToReloadUsers(){
+void notifyServersToReloadUsers(std::string clusterID, std::string clusterSubdirectory) {
     std::string host = "localhost";
-    std::string port = "10000"; // assuming server is running on 3028
+    std::unordered_map<std::string, int> myMap;
+    myMap["1_1"] = 10000;
+    myMap["1_2"] = 10001;
+    myMap["2_1"] = 20000;
+    myMap["2_2"] = 20001;
+    myMap["3_1"] = 30000;
+    myMap["3_2"] = 30001;
+    std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
+
+    // time the RPC calls
     std::cout << "Notifying server at " << host << ":" << port << " to reload user lists." << std::endl;
     auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
     std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
@@ -765,4 +778,5 @@ void notifyServersToReloadUsers(){
         log(INFO, "ReloadAllUsers RPC succeeded");
         std::cout << "ReloadAllUsers RPC succeeded" << std::endl;
     }
+
 }

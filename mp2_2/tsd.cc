@@ -75,11 +75,18 @@ using csce438::CoordService; // newly_added
 using csce438::ID; // newly added
 using grpc::ClientContext; // newly added
 
+#include <semaphore.h>   // sem_t, sem_open, sem_close, sem_wait, sem_post
+#include <fcntl.h>       // O_CREAT, O_EXCL
+#include <sys/stat.h>    // mode constants like 0644
 
 
 // connecting the coordinator to server
 using csce438::Empty;
 using csce438::CoordConfirmation;
+std::string read_file(const std::string& filename);
+std::vector<std::string> split_lines(const std::string& text);
+
+
 
 struct Client {
   std::string username;
@@ -570,6 +577,23 @@ class SNSServiceImpl final : public SNSService::Service {
     // 
   Status ReloadAllUsers(ServerContext* context, const Empty* request, CoordConfirmation* reply) override {
     std::cout << "ReloadAllUsers called" << std::endl;
+
+    // named semaphore
+    std::string semName = "/" + server_config_.serverId + "_" + server_config_.clusterId + "_" + "all_users.txt";
+    std::string filename = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/" + "all_users.txt";
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+    std::string content = read_file(filename);
+    std::vector<std::string> lines = split_lines(content);
+    std::cout << "There are " << lines.size() << " users in the reloaded file." << std::endl;
+
+    // Close the named semaphore opened above to avoid leaking semaphore handles
+    if (fileSem) {
+      sem_close(fileSem);
+    }
+
+    std::cout << "[server " << server_config_.serverId
+              << "] ReloadAllUsers EXIT" << std::endl;
+
     return Status::OK;
     
   }
@@ -654,7 +678,7 @@ void sendHeartbeat(const ServerConfig& config){
       //std::cerr << "Heartbeat failed to send from server " + config.serverId + ": " + status.error_message() << std::endl;
     }
     else {
-      LOG(INFO) << "heartbeat sent successfully from server " + config.serverId;
+      // LOG(INFO) << "heartbeat sent successfully from server " + config.serverId;
       //std::cout << "Heartbeat sent successfully from server " + config.serverId << std::endl;
     }
 
@@ -738,4 +762,23 @@ int main(int argc, char** argv) {
 // we have to update the data structure in the server, so that
 // when the follow requst cames, the server won't compllain that the people
 // is non-existent
+
+std::string read_file(const std::string& filename) {
+    std::ifstream in(filename);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();   // whole file as a single string
+}
+
+std::vector<std::string> split_lines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::stringstream ss(text);
+    std::string line;
+
+    while (std::getline(ss, line)) {
+        lines.push_back(line);
+    }
+    return lines;
+}
+
 
