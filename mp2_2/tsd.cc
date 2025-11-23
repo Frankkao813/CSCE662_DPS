@@ -642,6 +642,51 @@ class SNSServiceImpl final : public SNSService::Service {
     
   }
 
+  Status ReloadAllFollowers(ServerContext* context, const Empty* request, CoordConfirmation* reply) override {
+    std::cout << "ReloadFollowers called" << std::endl;
+
+    // named semaphore
+    std::string semName = "/" + server_config_.serverId + "_" + server_config_.clusterId + "_" + "followers.txt";
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+
+    // lock the file
+    if (fileSem) {
+        sem_wait(fileSem);
+    }
+
+    // for each client, reload its follower list
+    // find the client in client_db first
+
+    for (Client* c : client_db) {
+      std::string filename = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/" + c->username + "_followers.txt";
+      std::string content = read_file(filename);
+      std::vector<std::string> lines = split_lines(content);
+      for (const std::string& follower_name : lines) {
+        Client* follower_client = findClientByName(follower_name);
+        if (follower_client) {
+          // Avoid duplicates
+          if (!isInVector(c->client_followers, follower_client)) {
+            c->client_followers.push_back(follower_client);
+          }
+          // if (!isInVector(follower_client->client_following, c)) {
+          //   follower_client->client_following.push_back(c);
+          // }
+        }
+      }
+
+    }
+
+    // unlock the file
+    if (fileSem) {
+        sem_post(fileSem);
+    }
+
+    std::cout << "[server " << server_config_.serverId
+              << "] ReloadFollowers EXIT" << std::endl;
+
+    return Status::OK;
+  }
+
    private:
     ServerConfig server_config_;
     std::unique_ptr<SNSService::Stub> slave_stub_;

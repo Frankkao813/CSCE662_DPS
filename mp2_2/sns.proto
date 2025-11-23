@@ -41,6 +41,7 @@ service SNSService {
   rpc Follow(Request) returns (Reply) {}
   rpc UnFollow(Request) returns (Reply) {}
   rpc ReloadAllUsers(Empty) returns (CoordConfirmation) {}
+  rpc ReloadAllFollowers(Empty) returns (CoordConfirmation){}
   // Bidirectional streaming RPC
   rpc Timeline(stream Message) returns (stream Message) {}
 }

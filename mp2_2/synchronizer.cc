@@ -116,6 +116,16 @@ void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInf
 
 std::unique_ptr<csce438::CoordService::Stub> coordinator_stub_;
 void notifyServersToReloadUsers(std::string clusterID, std::string clusterSubdirectory);  // forward declaration
+void notifyServersToReloadFollowers(std::string clusterID, std::string clusterSubdirectory);  // forward declaration
+// some port mapping (should be corrected later)
+std::unordered_map<std::string, int> myMap = {
+    {"1_1", 10000},
+    {"1_2", 10001},
+    {"2_1", 20000},
+    {"2_2", 20001},
+    {"3_1", 30000},
+    {"3_2", 30001}
+};
 
 class SynchronizerRabbitMQ
 {
@@ -300,6 +310,9 @@ public:
                 }
             }
         }
+
+        // reload the follower relationship
+        notifyServersToReloadFollowers(std::to_string(clusterID), clusterSubdirectory);
     }
 
     // for every client in your cluster, update all their followers' timeline files
@@ -751,13 +764,7 @@ std::vector<std::string> getFollowersOfUser(int ID)
 
 void notifyServersToReloadUsers(std::string clusterID, std::string clusterSubdirectory) {
     std::string host = "localhost";
-    std::unordered_map<std::string, int> myMap;
-    myMap["1_1"] = 10000;
-    myMap["1_2"] = 10001;
-    myMap["2_1"] = 20000;
-    myMap["2_2"] = 20001;
-    myMap["3_1"] = 30000;
-    myMap["3_2"] = 30001;
+
     std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
 
     // time the RPC calls
@@ -779,4 +786,29 @@ void notifyServersToReloadUsers(std::string clusterID, std::string clusterSubdir
         std::cout << "ReloadAllUsers RPC succeeded" << std::endl;
     }
 
+}
+
+void notifyServersToReloadFollowers(std::string clusterID, std::string clusterSubdirectory){
+    std::string host = "localhost";
+
+    std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
+
+    // time the RPC calls
+    std::cout << "Notifying server at " << host << ":" << port << " to reload follower relationships." << std::endl;
+    auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
+    std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
+
+    Empty req;
+    CoordConfirmation resp;
+    ClientContext context;
+
+    Status status = stub->ReloadAllFollowers(&context, req, &resp);
+
+    if (!status.ok()) {
+        log(ERROR, "ReloadAllFollowers RPC failed: " + status.error_message());
+        std::cout << "ReloadAllFollowers RPC failed: " << status.error_message() << std::endl;
+    } else {
+        log(INFO, "ReloadAllFollowers RPC succeeded");
+        std::cout << "ReloadAllFollowers RPC succeeded" << std::endl;
+    }
 }
