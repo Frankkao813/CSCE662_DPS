@@ -187,10 +187,12 @@ bool append_to_file(const std::string& folder, const std::string& filename, cons
 }
 
 //TODO: implement this function
-std::vector<Message> recent_20_messages(std::string username){
-  std::string folder = "user";
+std::vector<Message> recent_20_messages(std::string username, ServerConfig config){
+  // This has to be changed because the folder format has already changed.
+  // std::string folder = "user";
+  std::string basefolder = "./cluster/" + config.clusterId + "/" + config.serverId + "/";
   std::string filename = username + "_following.txt";
-  std::string full_path = folder + "/" + filename;
+  std::string full_path = basefolder + "/" + filename;
   std::ifstream input_file(full_path);
   // if there is no file related to this path
   if (!input_file.is_open()){
@@ -518,7 +520,7 @@ class SNSServiceImpl final : public SNSService::Service {
     Client* c1 = findClientByName(uname);
     c1 -> stream = stream;
     // TODO: when the person enters timeline, push the recent 20 messages from who he is following to him
-    std::vector<Message> recent_msgs = recent_20_messages(uname);
+    std::vector<Message> recent_msgs = recent_20_messages(uname, server_config_);
     // push the result back to people
     for (auto msg:recent_msgs){
       c1 -> stream -> Write(msg);
