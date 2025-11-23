@@ -315,15 +315,21 @@ class SNSServiceImpl final : public SNSService::Service {
   Status List(ServerContext* context, const Request* request, ListReply* list_reply) override {
     // request is from grpc protobuf message
     std::string uname = request -> username();
+    std::cout << "we are processing List RPC for user " << uname << std::endl;
     for (Client* c : client_db){
         list_reply -> add_all_users(c -> username);
     }
 
     Client* c = findClientByName(uname);
+    std::cout << "the number of clinet followers is " << c -> client_followers.size() << std::endl;
     if (c != nullptr){
         for (Client* cf: c -> client_followers){
-            list_reply -> add_followers(cf -> username);
+          std::cout << "Adding follower: " << cf -> username << std::endl;
+          list_reply -> add_followers(cf -> username);
         }
+    }
+    else {
+        std::cout << "Client not found for List RPC: " << uname << std::endl;
     }
 
     return Status::OK;
@@ -365,7 +371,17 @@ class SNSServiceImpl final : public SNSService::Service {
         }
     }
 
-
+    // see that if the relationship is saved
+    std::cout << "After following, c1 is following: ";
+    for (auto* c: c1 -> client_following){
+      std::cout << c -> username << " ";
+    }
+    std::cout << std::endl;
+    std::cout << "After following, c2 has followers: ";
+    for (auto* c: c2 -> client_followers){
+      std::cout << c -> username << " ";
+    }
+    std::cout << std::endl;
 
     reply -> set_msg("Follow successful");
     // write to file
@@ -582,14 +598,42 @@ class SNSServiceImpl final : public SNSService::Service {
     std::string semName = "/" + server_config_.serverId + "_" + server_config_.clusterId + "_" + "all_users.txt";
     std::string filename = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/" + "all_users.txt";
     sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+
+    // lock the file
+    if (fileSem) {
+        sem_wait(fileSem);
+    }
+
     std::string content = read_file(filename);
     std::vector<std::string> lines = split_lines(content);
     std::cout << "There are " << lines.size() << " users in the reloaded file." << std::endl;
+    // see how many users are already in the client_db
+    int existing_users = client_db.size();
+    if (lines.size() <= existing_users) {
+      std::cout << "No new users to reload." << std::endl;
 
-    // Close the named semaphore opened above to avoid leaking semaphore handles
-    if (fileSem) {
-      sem_close(fileSem);
     }
+    else {
+      // Lock the semaphore before file operation
+
+      for (size_t i = existing_users; i < lines.size(); ++i) {
+        const std::string& uname = lines[i];
+        // Check if user already exists to avoid duplicates
+        if (findClientByName(uname) == nullptr) {
+          Client* newClient = new Client();
+          newClient->username = uname;
+          client_db.push_back(newClient);
+          std::cout << "Reloaded user: " << uname << std::endl;
+        }
+      }
+
+      // Unlock the semaphore after file operation
+      if (fileSem) {
+        sem_post(fileSem);
+      }
+    }
+
+    // search the client_db to avoid duplicate entries
 
     std::cout << "[server " << server_config_.serverId
               << "] ReloadAllUsers EXIT" << std::endl;
@@ -666,7 +710,7 @@ void sendHeartbeat(const ServerConfig& config){
         server_info.set_type("slave");
     }
     server_info.set_clusterid(std::stoi(config.clusterId));
-    std::cout << "Sending heartbeat from server " << config.serverId << std::endl;
+    //std::cout << "Sending heartbeat from server " << config.serverId << std::endl;
 
     Confirmation confirmation;
     grpc::ClientContext context;
