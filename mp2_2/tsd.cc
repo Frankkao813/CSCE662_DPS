@@ -391,10 +391,11 @@ class SNSServiceImpl final : public SNSService::Service {
       std::string server_folder = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/";
       std::cout << server_folder << std::endl;
       std::filesystem::create_directories(server_folder);
-      std::string user_file = server_folder + uname + "_follow_list.txt";
+      // std::string user_file = server_folder + uname + "_follow_list.txt";
+      std::string user_file = server_folder + target + "_followers.txt";
       std::ofstream out(user_file, std::ios::app);
       if (out) {
-        out << target << "\n"; // the username is written in the file
+        out << uname << "\n"; // the username is written in the file
       }
     } catch (const std::exception& e) {
       LOG(ERROR) << "Failed to write user file: " << e.what();

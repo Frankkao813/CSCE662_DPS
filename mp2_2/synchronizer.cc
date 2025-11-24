@@ -135,6 +135,8 @@ private:
     std::string hostname;
     int port;
     int synchID;
+    // number of posted messages
+    std::unordered_map<std::string, int> timelineLengths;
 
     void setupRabbitMQ()
     {
@@ -157,6 +159,19 @@ private:
                            0, 0, NULL, amqp_cstring_bytes(message.c_str()));
     }
 
+
+    void purgeQueue(const std::string &queueName)
+    {
+        amqp_queue_purge(conn, channel, amqp_cstring_bytes(queueName.c_str()));
+
+        amqp_rpc_reply_t reply = amqp_get_rpc_reply(conn);
+        if (reply.reply_type != AMQP_RESPONSE_NORMAL)
+        {
+            std::cerr << "Failed to purge queue " << queueName << std::endl;
+            // optional: print more details
+        }
+    }
+
     std::string consumeMessage(const std::string &queueName, int timeout_ms = 5000)
     {
         amqp_basic_consume(conn, channel, amqp_cstring_bytes(queueName.c_str()),
@@ -171,13 +186,22 @@ private:
 
         amqp_rpc_reply_t res = amqp_consume_message(conn, &envelope, &timeout, 0);
 
-        if (res.reply_type != AMQP_RESPONSE_NORMAL)
-        {
+        if (res.reply_type != AMQP_RESPONSE_NORMAL) {
+            std::cerr << "consumeMessage error on " << queueName
+                    << ", reply_type = " << res.reply_type << std::endl;
+
+            if (res.reply_type == AMQP_RESPONSE_LIBRARY_EXCEPTION) {
+                std::cerr << "Library exception: "
+                        << amqp_error_string2(res.library_error) << std::endl;
+            }
+
             return "";
         }
-
+        
         std::string message(static_cast<char *>(envelope.message.body.bytes), envelope.message.body.len);
         amqp_destroy_envelope(&envelope);
+
+
         return message;
     }
 
@@ -186,10 +210,18 @@ public:
     SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname("rabbitmq"), port(p), channel(1), synchID(id)
     {
         setupRabbitMQ();
-        declareQueue("synch" + std::to_string(synchID) + "_users_queue");
-        declareQueue("synch" + std::to_string(synchID) + "_clients_relations_queue");
-        declareQueue("synch" + std::to_string(synchID) + "_timeline_queue");
-        // TODO: add or modify what kind of queues exist in your clusters based on your needs
+        std::string q_users    = "synch" + std::to_string(synchID) + "_users_queue";
+        std::string q_clients  = "synch" + std::to_string(synchID) + "_clients_relations_queue";
+        std::string q_timeline = "synch" + std::to_string(synchID) + "_timeline_queue";
+
+        declareQueue(q_users);
+        declareQueue(q_clients);
+        declareQueue(q_timeline);
+
+        // // Clean state on startup:
+        // purgeQueue(q_users);
+        // purgeQueue(q_clients);
+        // purgeQueue(q_timeline);
     }
 
     void publishUserList()
@@ -320,27 +352,85 @@ public:
     //  periodically to the message queue of the synchronizer responsible for that client
     void publishTimelines()
     {
+        std::cout<< "Publishing timelines from synchronizer " << synchID << std::endl;
         std::vector<std::string> users = get_all_users_func(synchID);
+        std::cout << "There are " << users.size() << " users in this synchronizer." << std::endl;
+        std::vector<int> server_ids;
+        std::vector<std::string> hosts, ports;
+        synchRegistry.snapshot(server_ids, hosts, ports);
 
         for (const auto &client : users)
         {
             int clientId = std::stoi(client);
             int client_cluster = ((clientId - 1) % 3) + 1;
             // only do this for clients in your own cluster
-            if (client_cluster != clusterID)
-            {
+            if (client_cluster != clusterID){
                 continue;
             }
 
             std::vector<std::string> timeline = get_tl_or_fl(synchID, clientId, true);
+            std::cout << "Client " << clientId << " timeline has " << timeline.size() << " lines." << std::endl;
+            std::cout << "User " << clientId << " has " << timeline.size() / 3 << " posts in their timeline." << std::endl;
             std::vector<std::string> followers = getFollowersOfUser(clientId);
+
+            int totalPosts = timeline.size() / 3;
+            int oldPosts = 0;
+            if (timelineLengths.find(client) != timelineLengths.end()){
+                oldPosts = timelineLengths[client];
+            }
+            std::cout << "User " << clientId << " has " << oldPosts << " old posts in their timeline." << std::endl;
+            if (oldPosts >= totalPosts){
+                continue; // nothing new to send
+            }
+
+            Json::Value posts(Json::arrayValue);
+            for (int i = oldPosts * 3; i < totalPosts * 3; i += 3){
+                
+                Json::Value post(Json::arrayValue);
+                post.append(timeline[i + 0]); // "T ..."
+                post.append(timeline[i + 1]); // "U ..."
+                post.append(timeline[i + 2]); // "W ..."
+                post.append(""); // "" (blank)
+                posts.append(post);
+            }
+
+            if (posts.empty()){
+                continue;
+            }
 
             for (const auto &follower : followers)
             {
                 // send the timeline updates of your current user to all its followers
+                int followerId = std::stoi(follower);
+                int follower_cluster = ((followerId - 1) % 3) + 1;
+                // choose a synchronizer that is responsible for the follower
+                for (int id: server_ids){
+                    int syncCluster = ((id - 1) % 3) + 1;
+                    if (syncCluster != follower_cluster){
+                        continue;
+                    }
+                    std::string queueName = "synch" + std::to_string(id) + "_timeline_queue";
+                    std::cout << "Publishing to queue " << queueName << " for follower " << followerId << std::endl;
 
-                // YOUR CODE HERE
+                    // Send all *new* posts for this author to this synchronizer
+                    Json::Value timelineEntry;
+
+                
+                    timelineEntry["receiver"] = follower;
+                    timelineEntry["post"] = posts;
+
+                    static Json::FastWriter writer;  // can reuse
+                    std::string message = writer.write(timelineEntry);
+                    publishMessage(queueName, message);
+                    std::cout << "Published " << posts.size() << " new posts from user " << clientId << " to follower " << followerId << " via synchronizer " << id << std::endl;
+                    std::cout << "the follower id is" << followerId << std::endl;
+                }
+            
+
             }
+            // We have now sent all posts up to totalPosts for this user
+            timelineLengths[client] = totalPosts;
+            std::cout << "User " << clientId << " timeline updated to " << totalPosts << " posts." << std::endl;
         }
     }
 
@@ -349,13 +439,70 @@ public:
     {
         std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue";
         std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+        std::cout << "consumeTimelines: raw message: " << message <<  " from " << queueName << std::endl;
 
         if (!message.empty())
         {
             // consume the message from the queue and update the timeline file of the appropriate client with
             // the new updates to the timeline of the user it follows
+            Json::Value root;
+            Json::Reader reader;
+            if (reader.parse(message, root)){
+                std::string receiver = root["receiver"].asString();
+                std::cout << "consumeTimelines: updating timeline for receiver " << receiver << std::endl;
+                if (receiver.empty()) { // There might be no timeline messages or clients available
+                    std::cerr << "consumeTimelines: empty receiver, ignoring message\n";
+                    return;
+                }
 
-            // YOUR CODE HERE
+                if (!root.isMember("post") || !root["post"].isArray()) { // it fetch the wrong message
+                    std::cerr << "consumeTimelines: missing or invalid 'post', raw message: "
+                            << message << std::endl;
+                    return;
+                }
+                //const Json::Value &posts = root["post"]; // JSON array of post-arrays
+                std::string timelineFile = "./cluster/" + std::to_string(clusterID) + "/" +
+                                        clusterSubdirectory + "/" + receiver + "_following.txt";
+                std::cout << "Updating timeline file " << timelineFile << " for client " << receiver << std::endl;
+
+                std::string semName = "/" + std::to_string(clusterID) + "_" +
+                                    clusterSubdirectory + "_" + receiver + "_following.txt";
+                sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+                if (fileSem == SEM_FAILED) {
+                    perror("consumeTimelines: sem_open");
+                    return;
+                }
+
+                // protect writes with semaphore, open file in append mode
+                sem_wait(fileSem);
+                std::ofstream timelineStream(timelineFile, std::ios::app);
+                if (!timelineStream.is_open()) {
+                    std::cerr << "consumeTimelines: could not open " << timelineFile << std::endl;
+                    sem_post(fileSem);
+                    sem_close(fileSem);
+                    return;
+                }
+
+                std::cout << "consumeTimelines: updating timeline for receiver " << receiver << std::endl;
+                const Json::Value &postsJSON = root["post"]; // array of posts
+
+                for (const auto &postEntry : postsJSON) {
+                    for (const auto &lineVal : postEntry) {
+                        timelineStream << lineVal.asString() << std::endl;
+                    }
+                }
+
+                timelineStream.close();
+
+                
+
+                sem_post(fileSem);
+                sem_close(fileSem);
+            
+
+
+            }
+
         }
     }
 
@@ -723,6 +870,8 @@ std::vector<std::string> get_tl_or_fl(int synchID, int clientID, bool tl)
         slave_fn.append("_followers.txt");
     }
 
+    std::cout << "Getting timeline/followers from files: " << master_fn << " and " << slave_fn << std::endl;
+
     std::vector<std::string> m = get_lines_from_file(master_fn);
     std::vector<std::string> s = get_lines_from_file(slave_fn);
 
@@ -745,8 +894,9 @@ std::vector<std::string> getFollowersOfUser(int ID)
     for (auto userID : usersInCluster)
     { // Examine each user's following file
         // if 1 follows 2, 3, 4, there should be 2, 3, 4 in 1_follow_list.txt
-        std::string file = "cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + userID + "_follow_list.txt";
-        std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + userID + "_follow_list.txt";
+        // edit -  change follow_list to followers.txt
+        std::string file = "cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + userID + "_followers.txt";
+        std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + userID + "_followers.txt";
         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
         //std::cout << "Reading file " << file << std::endl;
         if (file_contains_user(file, clientID))
