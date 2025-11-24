@@ -127,102 +127,182 @@ std::unordered_map<std::string, int> myMap = {
     {"3_2", 30001}
 };
 
-class SynchronizerRabbitMQ
-{
+class SynchronizerRabbitMQ {
 private:
-    amqp_connection_state_t conn;
-    amqp_channel_t channel;
     std::string hostname;
     int port;
     int synchID;
-    // number of posted messages
-    std::unordered_map<std::string, int> timelineLengths;
 
-    void setupRabbitMQ()
+    amqp_connection_state_t conn;
+    amqp_channel_t publish_channel;   // for all publish/declare/purge
+    amqp_channel_t consume_channel;   // for all basic_get / read_message
+
+    std::mutex amqpMutex;             // protect conn/channels across threads
+
+public:
+    SynchronizerRabbitMQ(const std::string &host, int p, int id)
+        : hostname("rabbitmq"),        // your original choice
+          port(p),
+          synchID(id),
+          conn(nullptr),
+          publish_channel(1),
+          consume_channel(2)
     {
+        setupRabbitMQ();
+
+        // Declare the queues that *this* synchronizer owns
+        declareQueue("synch" + std::to_string(synchID) + "_users_queue");
+        declareQueue("synch" + std::to_string(synchID) + "_clients_relations_queue");
+        declareQueue("synch" + std::to_string(synchID) + "_timeline_queue");
+
+        // If you want to start from a clean state, you can purge your own queues here:
+        purgeQueue("synch" + std::to_string(synchID) + "_users_queue");
+        purgeQueue("synch" + std::to_string(synchID) + "_clients_relations_queue");
+        purgeQueue("synch" + std::to_string(synchID) + "_timeline_queue");
+    }
+
+    ~SynchronizerRabbitMQ() {
+        std::lock_guard<std::mutex> lock(amqpMutex);
+        if (conn) {
+            amqp_channel_close(conn, publish_channel, AMQP_REPLY_SUCCESS);
+            amqp_channel_close(conn, consume_channel, AMQP_REPLY_SUCCESS);
+            amqp_connection_close(conn, AMQP_REPLY_SUCCESS);
+            amqp_destroy_connection(conn);
+        }
+    }
+
+private:
+    void setupRabbitMQ() {
+        std::lock_guard<std::mutex> lock(amqpMutex);
+
         conn = amqp_new_connection();
         amqp_socket_t *socket = amqp_tcp_socket_new(conn);
-        amqp_socket_open(socket, hostname.c_str(), port);
-        amqp_login(conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN, "guest", "guest");
-        amqp_channel_open(conn, channel);
-    }
+        if (!socket) {
+            throw std::runtime_error("Failed to create AMQP socket");
+        }
 
-    void declareQueue(const std::string &queueName)
-    {
-        amqp_queue_declare(conn, channel, amqp_cstring_bytes(queueName.c_str()),
-                           0, 0, 0, 0, amqp_empty_table);
-    }
+        int status = amqp_socket_open(socket, hostname.c_str(), port);
+        if (status) {
+            throw std::runtime_error("Failed to open AMQP socket");
+        }
 
-    void publishMessage(const std::string &queueName, const std::string &message)
-    {
-        amqp_basic_publish(conn, channel, amqp_empty_bytes, amqp_cstring_bytes(queueName.c_str()),
-                           0, 0, NULL, amqp_cstring_bytes(message.c_str()));
-    }
+        amqp_rpc_reply_t login_reply = amqp_login(
+            conn, "/", 0, 131072, 0,
+            AMQP_SASL_METHOD_PLAIN, "guest", "guest");
 
+        if (login_reply.reply_type != AMQP_RESPONSE_NORMAL) {
+            throw std::runtime_error("AMQP login failed");
+        }
 
-    void purgeQueue(const std::string &queueName)
-    {
-        amqp_queue_purge(conn, channel, amqp_cstring_bytes(queueName.c_str()));
+        // Open one channel for publishing/declaring
+        amqp_channel_open(conn, publish_channel);
+        if (amqp_get_rpc_reply(conn).reply_type != AMQP_RESPONSE_NORMAL) {
+            throw std::runtime_error("Failed to open publish channel");
+        }
 
-        amqp_rpc_reply_t reply = amqp_get_rpc_reply(conn);
-        if (reply.reply_type != AMQP_RESPONSE_NORMAL)
-        {
-            std::cerr << "Failed to purge queue " << queueName << std::endl;
-            // optional: print more details
+        // Open one channel for consuming (basic_get)
+        amqp_channel_open(conn, consume_channel);
+        if (amqp_get_rpc_reply(conn).reply_type != AMQP_RESPONSE_NORMAL) {
+            throw std::runtime_error("Failed to open consume channel");
         }
     }
 
-    std::string consumeMessage(const std::string &queueName, int timeout_ms = 5000)
-    {
-        amqp_basic_consume(conn, channel, amqp_cstring_bytes(queueName.c_str()),
-                           amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
+    void declareQueue(const std::string &queueName) {
+        std::lock_guard<std::mutex> lock(amqpMutex);
 
-        amqp_envelope_t envelope;
-        amqp_maybe_release_buffers(conn);
-
-        struct timeval timeout;
-        timeout.tv_sec = timeout_ms / 1000;
-        timeout.tv_usec = (timeout_ms % 1000) * 1000;
-
-        amqp_rpc_reply_t res = amqp_consume_message(conn, &envelope, &timeout, 0);
-
-        if (res.reply_type != AMQP_RESPONSE_NORMAL) {
-            std::cerr << "consumeMessage error on " << queueName
-                    << ", reply_type = " << res.reply_type << std::endl;
-
-            if (res.reply_type == AMQP_RESPONSE_LIBRARY_EXCEPTION) {
-                std::cerr << "Library exception: "
-                        << amqp_error_string2(res.library_error) << std::endl;
-            }
-
-            return "";
+        amqp_queue_declare(conn,
+                           publish_channel,
+                           amqp_cstring_bytes(queueName.c_str()),
+                           0,   // passive
+                           0,   // durable
+                           0,   // exclusive
+                           0,   // auto-delete
+                           amqp_empty_table);
+        amqp_rpc_reply_t r = amqp_get_rpc_reply(conn);
+        if (r.reply_type != AMQP_RESPONSE_NORMAL) {
+            std::cerr << "Failed to declare queue " << queueName << std::endl;
         }
-        
-        std::string message(static_cast<char *>(envelope.message.body.bytes), envelope.message.body.len);
-        amqp_destroy_envelope(&envelope);
+    }
 
+    void purgeQueue(const std::string &queueName) {
+        std::lock_guard<std::mutex> lock(amqpMutex);
 
-        return message;
+        amqp_queue_purge(conn, publish_channel,
+                         amqp_cstring_bytes(queueName.c_str()));
+        amqp_get_rpc_reply(conn); // ignore error for now
     }
 
 public:
-    // SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname(host), port(p), channel(1), synchID(id)
-    SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname("rabbitmq"), port(p), channel(1), synchID(id)
-    {
-        setupRabbitMQ();
-        std::string q_users    = "synch" + std::to_string(synchID) + "_users_queue";
-        std::string q_clients  = "synch" + std::to_string(synchID) + "_clients_relations_queue";
-        std::string q_timeline = "synch" + std::to_string(synchID) + "_timeline_queue";
+    void publishMessage(const std::string &queueName, const std::string &message) {
+        std::lock_guard<std::mutex> lock(amqpMutex);
 
-        declareQueue(q_users);
-        declareQueue(q_clients);
-        declareQueue(q_timeline);
+        int status = amqp_basic_publish(
+            conn,
+            publish_channel,
+            amqp_empty_bytes, // default exchange
+            amqp_cstring_bytes(queueName.c_str()),
+            0,    // mandatory
+            0,    // immediate
+            NULL, // properties
+            amqp_cstring_bytes(message.c_str()));
 
-        // // Clean state on startup:
-        // purgeQueue(q_users);
-        // purgeQueue(q_clients);
-        // purgeQueue(q_timeline);
+        if (status < 0) {
+            std::cerr << "Failed to publish to " << queueName
+                      << ": " << amqp_error_string2(status) << std::endl;
+        }
     }
+
+private:
+    // Core helper: get one message from exactly this queue using basic_get.
+    std::string basicGet(const std::string &queueName) {
+        std::lock_guard<std::mutex> lock(amqpMutex);
+
+        amqp_rpc_reply_t reply = amqp_basic_get(
+            conn,
+            consume_channel,
+            amqp_cstring_bytes(queueName.c_str()),
+            1  // no_ack = 1: automatic ack
+        );
+
+        if (reply.reply_type != AMQP_RESPONSE_NORMAL) {
+            if (reply.reply_type == AMQP_RESPONSE_LIBRARY_EXCEPTION) {
+                std::cerr << "[basic_get] error on queue " << queueName
+                          << ": " << amqp_error_string2(reply.library_error)
+                          << std::endl;
+            }
+            return "";
+        }
+
+        if (reply.reply.id == AMQP_BASIC_GET_EMPTY_METHOD) {
+            // No message currently in this queue
+            return "";
+        }
+
+        amqp_message_t message;
+        amqp_rpc_reply_t msg_reply =
+            amqp_read_message(conn, consume_channel, &message, 0);
+
+        if (msg_reply.reply_type != AMQP_RESPONSE_NORMAL) {
+            std::cerr << "[read_message] failed on queue " << queueName << std::endl;
+            amqp_destroy_message(&message);
+            return "";
+        }
+
+        std::string body;
+        if (message.body.bytes && message.body.len > 0) {
+            body.assign(static_cast<char*>(message.body.bytes),
+                        static_cast<size_t>(message.body.len));
+        }
+
+        amqp_destroy_message(&message);
+        amqp_maybe_release_buffers(conn);
+        return body;
+    }
+
+
+
+public:
+
 
     void publishUserList()
     {
@@ -251,7 +331,8 @@ public:
         for (int id : server_ids)
         {
             std::string queueName = "synch" + std::to_string(id) + "_users_queue";
-            std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+            //std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+            std::string message = basicGet(queueName); // <--- key change
             if (!message.empty())
             {
                 Json::Value root;
@@ -312,8 +393,8 @@ public:
         {
 
             std::string queueName = "synch" + std::to_string(id) + "_clients_relations_queue";
-            std::string message = consumeMessage(queueName, 1000); // 1 second timeout
-
+            //std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+            std::string message = basicGet(queueName); // <--- key change
             if (!message.empty())
             {
                 Json::Value root;
@@ -325,6 +406,11 @@ public:
                         std::string followerFile = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + client + "_followers.txt";
                         std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + client + "_followers.txt";
                         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+                        // lock the file
+                        if (fileSem)
+                        {
+                            sem_wait(fileSem);
+                        }
 
                         std::ofstream followerStream(followerFile, std::ios::app | std::ios::out | std::ios::in);
                         if (root.isMember(client))
@@ -337,7 +423,11 @@ public:
                                 }
                             }
                         }
-                        sem_close(fileSem);
+                        if (fileSem)
+                        {
+                            sem_post(fileSem);
+                            sem_close(fileSem);
+                        }
                     }
                 }
             }
@@ -410,7 +500,7 @@ public:
                         continue;
                     }
                     std::string queueName = "synch" + std::to_string(id) + "_timeline_queue";
-                    std::cout << "Publishing to queue " << queueName << " for follower " << followerId << std::endl;
+                    std::cout <<"User " << clientId << " Publishing to queue " << queueName << " for follower " << followerId << std::endl;
 
                     // Send all *new* posts for this author to this synchronizer
                     Json::Value timelineEntry;
@@ -438,7 +528,8 @@ public:
     void consumeTimelines()
     {
         std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue";
-        std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+        //std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+        std::string message = basicGet(queueName); // <--- key change
         std::cout << "consumeTimelines: raw message: " << message <<  " from " << queueName << std::endl;
 
         if (!message.empty())
@@ -475,6 +566,7 @@ public:
 
                 // protect writes with semaphore, open file in append mode
                 sem_wait(fileSem);
+                std::cout << "start to write to " << timelineFile << std::endl;
                 std::ofstream timelineStream(timelineFile, std::ios::app);
                 if (!timelineStream.is_open()) {
                     std::cerr << "consumeTimelines: could not open " << timelineFile << std::endl;
