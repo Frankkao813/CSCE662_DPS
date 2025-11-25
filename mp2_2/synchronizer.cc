@@ -86,6 +86,28 @@ std::vector<std::string> get_tl_or_fl(int, int, bool);
 std::vector<std::string> getFollowersOfUser(int);
 bool file_contains_user(std::string filename, std::string user);
 
+// sanitizing semaphore components
+std::string sanitizeSemComponent(const std::string &input) {
+    std::string output;
+    for (char c : input) {
+        if (c == '/'){
+            output += "_";
+        }
+        else{
+            output += c;
+        }
+    }
+    return output;
+}
+
+
+std::string makeSemaphoreName(const std::string &filename) {
+    // for instance, filename = "cluster/1/1/all_users.txt"
+    // should return "/1_1_all_users.txt"
+    std::string base = std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + filename;
+    return "/" + sanitizeSemComponent(base);
+}
+
 struct SynchronizerRegistry{
     std::mutex mu;
     std::vector<int> server_ids;
@@ -388,6 +410,7 @@ public:
 
         std::cerr << "consuming user lists from " << server_ids.size() << " synchronizers\n";
 
+
         // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
         for (int id : server_ids)
         {
@@ -404,13 +427,16 @@ public:
                     for (const auto &client : allUsers)
                     {
                         std::string followerFile = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + client + "_followers.txt";
-                        std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + client + "_followers.txt";
-                        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+                        //std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + client + "_followers.txt";
+                        std::string semName = makeSemaphoreName(client + "_followers.txt");
+                        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
                         // lock the file
-                        if (fileSem)
-                        {
-                            sem_wait(fileSem);
-                        }
+                        if (fileSem == SEM_FAILED) {
+                            perror("consumeClientRelations: sem_open");
+                            continue;
+                        } 
+
+                        sem_wait(fileSem);
 
                         std::ofstream followerStream(followerFile, std::ios::app | std::ios::out | std::ios::in);
                         if (root.isMember(client))
@@ -423,11 +449,9 @@ public:
                                 }
                             }
                         }
-                        if (fileSem)
-                        {
-                            sem_post(fileSem);
-                            sem_close(fileSem);
-                        }
+
+                        sem_post(fileSem);
+                        sem_close(fileSem);
                     }
                 }
             }
@@ -527,6 +551,7 @@ public:
     // For each client in your cluster, consume messages from your timeline queue and modify your client's timeline files based on what the users they follow posted to their timeline
     void consumeTimelines()
     {
+
         std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue";
         //std::string message = consumeMessage(queueName, 1000); // 1 second timeout
         std::string message = basicGet(queueName); // <--- key change
@@ -551,14 +576,15 @@ public:
                             << message << std::endl;
                     return;
                 }
-                //const Json::Value &posts = root["post"]; // JSON array of post-arrays
+
+
+
                 std::string timelineFile = "./cluster/" + std::to_string(clusterID) + "/" +
-                                        clusterSubdirectory + "/" + receiver + "_following.txt";
+                                        clusterSubdirectory + "/" + receiver + "_timeline.txt";
+                std::string semName = makeSemaphoreName(receiver + "_timeline.txt");
                 std::cout << "Updating timeline file " << timelineFile << " for client " << receiver << std::endl;
 
-                std::string semName = "/" + std::to_string(clusterID) + "_" +
-                                    clusterSubdirectory + "_" + receiver + "_following.txt";
-                sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+                sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
                 if (fileSem == SEM_FAILED) {
                     perror("consumeTimelines: sem_open");
                     return;
@@ -603,17 +629,28 @@ private:
     {
 
         std::string usersFile = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/all_users.txt";
-        std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_all_users.txt";
-        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+        std::string semName = makeSemaphoreName("all_users.txt");
+        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+        if (fileSem == SEM_FAILED) {
+            perror("updateAllUsersFile: sem_open");
+            return;
+        }
+        sem_wait(fileSem);
 
         std::ofstream userStream(usersFile, std::ios::app | std::ios::out | std::ios::in);
-        for (std::string user : users)
-        {
-            if (!file_contains_user(usersFile, user))
-            {
-                userStream << user << std::endl;
+        if (!userStream.is_open()) {
+            std::cerr << "updateAllUsersFile: could not open " << usersFile << std::endl;
+        }
+        else{
+            for (std::string user : users){
+                if (!file_contains_user(usersFile, user))
+                {
+                    userStream << user << std::endl;
+                }
             }
         }
+
+        sem_post(fileSem);
         sem_close(fileSem);
 
 
@@ -848,17 +885,40 @@ std::vector<std::string> get_lines_from_file(std::string filename)
     std::vector<std::string> users;
     std::string user;
     std::ifstream file;
-    std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + filename;
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+
+    
+    std::string semName = makeSemaphoreName(filename);
+    
+    // 0600 or 0644?
+
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+    if (fileSem == SEM_FAILED) {
+        perror("sem_open failed");
+        return users; // return empty vector on semaphore error
+    }
+
+    auto cleanup = [&fileSem]() {
+        sem_post(fileSem);
+        sem_close(fileSem);
+    };
+    sem_wait(fileSem);
+
     file.open(filename);
+    if (!file.is_open()) {
+        std::cerr << "get_lines_from_file: could not open " << filename << std::endl;
+        cleanup();
+        return users; // return empty vector if file cannot be opened
+    }
+
     if (file.peek() == std::ifstream::traits_type::eof())
     {
         // return empty vector if empty file
         // std::cout<<"returned empty vector bc empty file"<<std::endl;
         file.close();
-        sem_close(fileSem);
+        cleanup();
         return users;
     }
+
     while (file)
     {
         getline(file, user);
@@ -868,7 +928,7 @@ std::vector<std::string> get_lines_from_file(std::string filename)
     }
 
     file.close();
-    sem_close(fileSem);
+    cleanup();
 
     return users;
 }
@@ -902,16 +962,23 @@ bool file_contains_user(std::string filename, std::string user)
 {
     std::vector<std::string> users;
     // check username is valid
-    std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + filename;
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+    std::string semName = makeSemaphoreName(filename);
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+    if (fileSem == SEM_FAILED) {
+        perror("sem_open failed");
+        return false; // return false on semaphore error
+    }
+
     users = get_lines_from_file(filename);
-    for (int i = 0; i < users.size(); i++)
+    for (size_t i = 0; i < users.size(); i++)
     {
         // std::cout<<"Checking if "<<user<<" = "<<users[i]<<std::endl;
         if (user == users[i])
         {
             // std::cout<<"found"<<std::endl;
-            sem_close(fileSem);
+            if (fileSem != SEM_FAILED) {
+                sem_close(fileSem);
+            }
             return true;
         }
     }
