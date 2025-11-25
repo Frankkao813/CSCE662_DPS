@@ -344,31 +344,53 @@ public:
     void consumeUserLists()
     {
         std::cerr << "consumeUserLists() entered for synchID=" << synchID << std::endl;
-        std::vector<std::string> allUsers;
+        std::unordered_set<std::string> allUsersSet; // Use set to avoid duplicates
 
         std::vector<int> server_ids;
         std::vector<std::string> hosts, ports;
         synchRegistry.snapshot(server_ids, hosts, ports);
+        
+        std::cout << "consumeUserLists: Will consume from " << server_ids.size() << " synchronizer queues" << std::endl;
+        for (int id : server_ids) {
+            std::cout << "  - synch" << id << "_users_queue" << std::endl;
+        }
 
         for (int id : server_ids)
         {
+            // Skip consuming from our own queue - we already have our own users
+            if (id == synchID) {
+                std::cout << "consumeUserLists: Skipping own queue synch" << id << "_users_queue" << std::endl;
+                continue;
+            }
+            
             std::string queueName = "synch" + std::to_string(id) + "_users_queue";
-            //std::string message = consumeMessage(queueName, 1000); // 1 second timeout
-            std::string message = basicGet(queueName); // <--- key change
-            if (!message.empty())
-            {
+            std::cout << "consumeUserLists: Attempting to read from " << queueName << std::endl;
+            
+            // Read only ONE message per queue to give other consumers a chance
+            std::string message = basicGet(queueName);
+            if (message.empty()) {
+                std::cout << "  No messages in " << queueName << std::endl;
+            } else {
+                std::cout << "Consumer (synch" << synchID << ") read from " << queueName 
+                          << ": " << message << std::endl;
+                
                 Json::Value root;
                 Json::Reader reader;
                 if (reader.parse(message, root))
                 {
                     for (const auto &user : root["users"])
                     {
-                        allUsers.push_back(user.asString());
+                        std::string userName = user.asString();
+                        allUsersSet.insert(userName);
+                        std::cout << "  - Extracted user: " << userName << std::endl;
                     }
                 }
             }
         }
-        std::cerr << "go to update all users file with " << allUsers.size() << " users." << std::endl;
+        
+        // Convert set to vector
+        std::vector<std::string> allUsers(allUsersSet.begin(), allUsersSet.end());
+        std::cerr << "go to update all users file with " << allUsers.size() << " unique users." << std::endl;
         updateAllUsersFile(allUsers);
     }
 
@@ -627,28 +649,76 @@ public:
 private:
     void updateAllUsersFile(const std::vector<std::string> &users)
     {
+        // Create directory structure if it doesn't exist
+        std::string dirPath = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory;
+        try {
+            std::filesystem::create_directories(dirPath);
+            std::cout << "updateAllUsersFile: ensured directory exists: " << dirPath << std::endl;
+        } catch (const std::filesystem::filesystem_error& e) {
+            std::cerr << "updateAllUsersFile: failed to create directory " << dirPath 
+                      << ": " << e.what() << std::endl;
+            return;
+        }
 
         std::string usersFile = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/all_users.txt";
+        
+        // Read existing users OUTSIDE the write lock to avoid deadlock
+        std::vector<std::string> existingUsers = get_lines_from_file(usersFile);
+        std::unordered_set<std::string> existingSet(existingUsers.begin(), existingUsers.end());
+        
+        std::cout << "updateAllUsersFile: existing users in " << usersFile << ": ";
+        for (const auto& u : existingUsers) {
+            std::cout << u << " ";
+        }
+        std::cout << std::endl;
+        
+        // Filter out users that already exist
+        std::vector<std::string> newUsers;
+        for (const std::string &user : users) {
+            if (existingSet.find(user) == existingSet.end()) {
+                newUsers.push_back(user);
+                std::cout << "  User '" << user << "' is NEW, will add" << std::endl;
+            } else {
+                std::cout << "  User '" << user << "' already exists, skipping" << std::endl;
+            }
+        }
+        
+        if (newUsers.empty()) {
+            std::cout << "updateAllUsersFile: no new users to add" << std::endl;
+            return;
+        }
+        
+        // Now acquire lock and write only new users
         std::string semName = makeSemaphoreName("all_users.txt");
-        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+        
+        // Try O_EXCL first (create new), if fails then open existing
+        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT | O_EXCL, 0666, 1);
+        if (fileSem == SEM_FAILED && errno == EEXIST) {
+            // Semaphore exists, just open it
+            fileSem = sem_open(semName.c_str(), 0);
+        }
         if (fileSem == SEM_FAILED) {
             perror("updateAllUsersFile: sem_open");
+            std::cerr << "updateAllUsersFile: semaphore name was: " << semName << std::endl;
             return;
         }
         sem_wait(fileSem);
 
-        std::ofstream userStream(usersFile, std::ios::app | std::ios::out | std::ios::in);
+        std::ofstream userStream(usersFile, std::ios::app);
         if (!userStream.is_open()) {
-            std::cerr << "updateAllUsersFile: could not open " << usersFile << std::endl;
+            std::cerr << "updateAllUsersFile: could not open " << usersFile 
+                      << " (errno: " << strerror(errno) << ")" << std::endl;
+            sem_post(fileSem);
+            sem_close(fileSem);
+            return;
         }
-        else{
-            for (std::string user : users){
-                if (!file_contains_user(usersFile, user))
-                {
-                    userStream << user << std::endl;
-                }
-            }
+        
+        for (const std::string &user : newUsers) {
+            userStream << user << std::endl;
+            std::cout << "  Wrote user '" << user << "' to " << usersFile << std::endl;
         }
+        
+        std::cout << "updateAllUsersFile: added " << newUsers.size() << " new users to " << usersFile << std::endl;
 
         sem_post(fileSem);
         sem_close(fileSem);
@@ -696,9 +766,9 @@ void RunServer(std::string coordIP, std::string coordPort, std::string port_no, 
                                {
         while (true) {
             rabbitMQ.consumeUserLists();
-            rabbitMQ.consumeClientRelations();
-            rabbitMQ.consumeTimelines();
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            //rabbitMQ.consumeClientRelations();
+            //rabbitMQ.consumeTimelines();
+            std::this_thread::sleep_for(std::chrono::seconds(2));
             // you can modify this sleep period as per your choice
         } });
 
@@ -872,10 +942,10 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
         rabbitMQ.publishUserList();
 
         // Publish client relations
-        rabbitMQ.publishClientRelations();
+        //rabbitMQ.publishClientRelations();
 
         // Publish timelines
-        rabbitMQ.publishTimelines();
+        //rabbitMQ.publishTimelines();
     }
     return;
 }
@@ -889,12 +959,11 @@ std::vector<std::string> get_lines_from_file(std::string filename)
     
     std::string semName = makeSemaphoreName(filename);
     
-    // 0600 or 0644?
-
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+    // Try to open with permissive permissions
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0666, 1);
     if (fileSem == SEM_FAILED) {
-        perror("sem_open failed");
-        return users; // return empty vector on semaphore error
+        perror("get_lines_from_file: sem_open failed");
+        return users;
     }
 
     auto cleanup = [&fileSem]() {
@@ -963,7 +1032,7 @@ bool file_contains_user(std::string filename, std::string user)
     std::vector<std::string> users;
     // check username is valid
     std::string semName = makeSemaphoreName(filename);
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0666, 1);
     if (fileSem == SEM_FAILED) {
         perror("sem_open failed");
         return false; // return false on semaphore error
