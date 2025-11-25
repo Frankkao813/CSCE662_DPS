@@ -219,9 +219,9 @@ public:
         declareQueue(q_timeline);
 
         // // Clean state on startup:
-        // purgeQueue(q_users);
-        // purgeQueue(q_clients);
-        // purgeQueue(q_timeline);
+        purgeQueue(q_users);
+        purgeQueue(q_clients);
+        purgeQueue(q_timeline);
     }
 
     void publishUserList()
@@ -462,11 +462,11 @@ public:
                 }
                 //const Json::Value &posts = root["post"]; // JSON array of post-arrays
                 std::string timelineFile = "./cluster/" + std::to_string(clusterID) + "/" +
-                                        clusterSubdirectory + "/" + receiver + "_following.txt";
+                                        clusterSubdirectory + "/" + receiver + "_timeline.txt";
                 std::cout << "Updating timeline file " << timelineFile << " for client " << receiver << std::endl;
 
                 std::string semName = "/" + std::to_string(clusterID) + "_" +
-                                    clusterSubdirectory + "_" + receiver + "_following.txt";
+                                    clusterSubdirectory + "_" + receiver + "_timeline.txt";
                 sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
                 if (fileSem == SEM_FAILED) {
                     perror("consumeTimelines: sem_open");
