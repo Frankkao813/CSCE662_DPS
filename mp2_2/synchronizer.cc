@@ -510,6 +510,12 @@ public:
         std::vector<std::string> hosts, ports;
         synchRegistry.snapshot(server_ids, hosts, ports);
 
+        if (synchID % 2 == 0){
+            // we don't let the slave synchornizer publish timelines
+            std::cout << "This is a slave synchronizer, skipping timeline publishing." << std::endl;
+            return;
+        }
+
         for (const auto &client : users)
         {
             int clientId = std::stoi(client);
@@ -557,7 +563,7 @@ public:
                 // choose a synchronizer that is responsible for the follower
                 for (int id: server_ids){
                     int syncCluster = ((id - 1) % 3) + 1;
-                    if (syncCluster != follower_cluster){
+                    if (syncCluster != follower_cluster){ 
                         continue;
                     }
                     std::string queueName = "synch" + std::to_string(id) + "_timeline_queue";
@@ -617,9 +623,9 @@ public:
 
 
                 std::string timelineFile = "./cluster/" + std::to_string(clusterID) + "/" +
-                                        clusterSubdirectory + "/" + receiver + "_timeline.txt";
-                std::string semName = makeSemaphoreName(receiver + "_timeline.txt");
-                std::cout << "Updating timeline file " << timelineFile << " for client " << receiver << std::endl;
+                                        clusterSubdirectory + "/" + receiver + "_following.txt";
+                std::string semName = makeSemaphoreName(receiver + "_following.txt");
+                std::cout << "Updating following file " << timelineFile << " for client " << receiver << std::endl;
 
                 sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
                 if (fileSem == SEM_FAILED) {
@@ -798,7 +804,7 @@ void RunServer(std::string coordIP, std::string coordPort, std::string port_no, 
             try {
                 rabbitMQ.consumeUserLists();
                 rabbitMQ.consumeClientRelations();
-                //rabbitMQ.consumeTimelines();
+                rabbitMQ.consumeTimelines();
             } catch (const std::exception& e) {
                 std::cerr << "Exception in consumer thread: " << e.what() << std::endl;
             } catch (...) {
@@ -981,7 +987,7 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
         rabbitMQ.publishClientRelations();
 
         // Publish timelines
-        //rabbitMQ.publishTimelines();
+        rabbitMQ.publishTimelines();
     }
     return;
 }
