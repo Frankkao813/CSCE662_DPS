@@ -454,8 +454,14 @@ public:
                         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
                         // lock the file
                         if (fileSem == SEM_FAILED) {
-                            perror("consumeClientRelations: sem_open");
-                            continue;
+                            // Try to recover by unlinking and recreating
+                            perror("consumeClientRelations: sem_open failed, trying to recover");
+                            sem_unlink(semName.c_str());
+                            fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+                            if (fileSem == SEM_FAILED) {
+                                perror("consumeClientRelations: sem_open recovery failed");
+                                continue;
+                            }
                         } 
 
                         sem_wait(fileSem);
@@ -608,8 +614,14 @@ public:
 
                 sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
                 if (fileSem == SEM_FAILED) {
-                    perror("consumeTimelines: sem_open");
-                    return;
+                    // Try to recover by unlinking and recreating
+                    perror("consumeTimelines: sem_open failed, trying to recover");
+                    sem_unlink(semName.c_str());
+                    fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+                    if (fileSem == SEM_FAILED) {
+                        perror("consumeTimelines: sem_open recovery failed");
+                        return;
+                    }
                 }
 
                 // protect writes with semaphore, open file in append mode
@@ -694,8 +706,14 @@ private:
         // Try O_EXCL first (create new), if fails then open existing
         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT | O_EXCL, 0666, 1);
         if (fileSem == SEM_FAILED && errno == EEXIST) {
-            // Semaphore exists, just open it
+            // Semaphore exists, try to open it
             fileSem = sem_open(semName.c_str(), 0);
+            if (fileSem == SEM_FAILED) {
+                // Existing semaphore is corrupted, unlink and recreate
+                std::cerr << "updateAllUsersFile: existing semaphore corrupted, unlinking and recreating" << std::endl;
+                sem_unlink(semName.c_str());
+                fileSem = sem_open(semName.c_str(), O_CREAT | O_EXCL, 0666, 1);
+            }
         }
         if (fileSem == SEM_FAILED) {
             perror("updateAllUsersFile: sem_open");
@@ -717,6 +735,9 @@ private:
             userStream << user << std::endl;
             std::cout << "  Wrote user '" << user << "' to " << usersFile << std::endl;
         }
+        
+        // Explicitly close the file to flush buffer before releasing semaphore
+        userStream.close();
         
         std::cout << "updateAllUsersFile: added " << newUsers.size() << " new users to " << usersFile << std::endl;
 
@@ -765,10 +786,16 @@ void RunServer(std::string coordIP, std::string coordPort, std::string port_no, 
     std::thread consumerThread([&rabbitMQ]()
                                {
         while (true) {
-            rabbitMQ.consumeUserLists();
-            //rabbitMQ.consumeClientRelations();
-            //rabbitMQ.consumeTimelines();
-            std::this_thread::sleep_for(std::chrono::seconds(2));
+            try {
+                rabbitMQ.consumeUserLists();
+                //rabbitMQ.consumeClientRelations();
+                //rabbitMQ.consumeTimelines();
+            } catch (const std::exception& e) {
+                std::cerr << "Exception in consumer thread: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "Unknown exception in consumer thread" << std::endl;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
             // you can modify this sleep period as per your choice
         } });
 
@@ -888,8 +915,8 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
     // TODO: begin synchronization process
     while (true)
     {
-        // the synchronizers sync files every 5 seconds
-        sleep(5);
+        // the synchronizers sync files every 2 seconds
+        sleep(2);
 
         grpc::ClientContext context;
         ServerList followerServers;
@@ -1141,52 +1168,74 @@ std::vector<std::string> getFollowersOfUser(int ID)
 
 
 void notifyServersToReloadUsers(std::string clusterID, std::string clusterSubdirectory) {
-    std::string host = "localhost";
+    try {
+        std::string host = "localhost";
 
-    std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
+        std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
 
-    // time the RPC calls
-    std::cout << "Notifying server at " << host << ":" << port << " to reload user lists." << std::endl;
-    auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
-    std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
+        // time the RPC calls
+        std::cout << "Notifying server at " << host << ":" << port << " to reload user lists." << std::endl;
+        auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
+        std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
 
-    Empty req;
-    CoordConfirmation resp;
-    ClientContext context;
+        Empty req;
+        CoordConfirmation resp;
+        ClientContext context;
+        
+        // Add 2 second timeout to prevent blocking indefinitely
+        std::chrono::system_clock::time_point deadline = 
+            std::chrono::system_clock::now() + std::chrono::seconds(2);
+        context.set_deadline(deadline);
 
-    Status status = stub->ReloadAllUsers(&context, req, &resp);
+        Status status = stub->ReloadAllUsers(&context, req, &resp);
 
-    if (!status.ok()) {
-        log(ERROR, "ReloadAllUsers RPC failed: " + status.error_message());
-        std::cout << "ReloadAllUsers RPC failed: " << status.error_message() << std::endl;
-    } else {
-        log(INFO, "ReloadAllUsers RPC succeeded");
-        std::cout << "ReloadAllUsers RPC succeeded" << std::endl;
+        if (!status.ok()) {
+            log(ERROR, "ReloadAllUsers RPC failed: " + status.error_message());
+            std::cout << "ReloadAllUsers RPC failed: " << status.error_message() << std::endl;
+        } else {
+            log(INFO, "ReloadAllUsers RPC succeeded");
+            std::cout << "ReloadAllUsers RPC succeeded" << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in notifyServersToReloadUsers: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Unknown exception in notifyServersToReloadUsers" << std::endl;
     }
 
 }
 
 void notifyServersToReloadFollowers(std::string clusterID, std::string clusterSubdirectory){
-    std::string host = "localhost";
+    try {
+        std::string host = "localhost";
 
-    std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
+        std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
 
-    // time the RPC calls
-    std::cout << "Notifying server at " << host << ":" << port << " to reload follower relationships." << std::endl;
-    auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
-    std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
+        // time the RPC calls
+        std::cout << "Notifying server at " << host << ":" << port << " to reload follower relationships." << std::endl;
+        auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
+        std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
 
-    Empty req;
-    CoordConfirmation resp;
-    ClientContext context;
+        Empty req;
+        CoordConfirmation resp;
+        ClientContext context;
+        
+        // Add 2 second timeout to prevent blocking indefinitely
+        std::chrono::system_clock::time_point deadline = 
+            std::chrono::system_clock::now() + std::chrono::seconds(2);
+        context.set_deadline(deadline);
 
-    Status status = stub->ReloadAllFollowers(&context, req, &resp);
+        Status status = stub->ReloadAllFollowers(&context, req, &resp);
 
-    if (!status.ok()) {
-        log(ERROR, "ReloadAllFollowers RPC failed: " + status.error_message());
-        std::cout << "ReloadAllFollowers RPC failed: " << status.error_message() << std::endl;
-    } else {
-        log(INFO, "ReloadAllFollowers RPC succeeded");
-        std::cout << "ReloadAllFollowers RPC succeeded" << std::endl;
+        if (!status.ok()) {
+            log(ERROR, "ReloadAllFollowers RPC failed: " + status.error_message());
+            std::cout << "ReloadAllFollowers RPC failed: " << status.error_message() << std::endl;
+        } else {
+            log(INFO, "ReloadAllFollowers RPC succeeded");
+            std::cout << "ReloadAllFollowers RPC succeeded" << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in notifyServersToReloadFollowers: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Unknown exception in notifyServersToReloadFollowers" << std::endl;
     }
 }

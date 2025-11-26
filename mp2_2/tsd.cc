@@ -598,43 +598,46 @@ class SNSServiceImpl final : public SNSService::Service {
     std::cout << "ReloadAllUsers called" << std::endl;
 
     // named semaphore
-    std::string semName = "/" + server_config_.serverId + "_" + server_config_.clusterId + "_" + "all_users.txt";
+    std::string semName = "/" + server_config_.clusterId + "_" + server_config_.serverId + "_" + "all_users.txt";
     std::string filename = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/" + "all_users.txt";
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0666, 1);
 
-    // lock the file
-    if (fileSem) {
-        sem_wait(fileSem);
+    if (fileSem == SEM_FAILED) {
+        std::cerr << "ReloadAllUsers: Failed to open semaphore" << std::endl;
+        return Status::OK;
     }
+
+    // Lock before reading file
+    sem_wait(fileSem);
 
     std::string content = read_file(filename);
     std::vector<std::string> lines = split_lines(content);
-    std::cout << "There are " << lines.size() << " users in the reloaded file." << std::endl;
-    // see how many users are already in the client_db
-    int existing_users = client_db.size();
-    if (lines.size() <= existing_users) {
-      std::cout << "No new users to reload." << std::endl;
-
+    
+    // Filter out empty lines
+    std::vector<std::string> filtered_lines;
+    for (const auto& line : lines) {
+        if (!line.empty()) {
+            filtered_lines.push_back(line);
+        }
     }
-    else {
-      // Lock the semaphore before file operation
-
-      for (size_t i = existing_users; i < lines.size(); ++i) {
-        const std::string& uname = lines[i];
+    lines = filtered_lines;
+    
+    std::cout << "There are " << lines.size() << " users in the reloaded file." << std::endl;
+    
+    // Reload ALL users from file, not just new ones
+    for (const std::string& uname : lines) {
         // Check if user already exists to avoid duplicates
         if (findClientByName(uname) == nullptr) {
-          Client* newClient = new Client();
-          newClient->username = uname;
-          client_db.push_back(newClient);
-          std::cout << "Reloaded user: " << uname << std::endl;
+            Client* newClient = new Client();
+            newClient->username = uname;
+            client_db.push_back(newClient);
+            std::cout << "Reloaded user: " << uname << std::endl;
         }
-      }
-
-      // Unlock the semaphore after file operation
-      if (fileSem) {
-        sem_post(fileSem);
-      }
     }
+
+    // Unlock the semaphore after file operation
+    sem_post(fileSem);
+    sem_close(fileSem);
 
     // search the client_db to avoid duplicate entries
 
@@ -648,14 +651,17 @@ class SNSServiceImpl final : public SNSService::Service {
   Status ReloadAllFollowers(ServerContext* context, const Empty* request, CoordConfirmation* reply) override {
     std::cout << "ReloadFollowers called" << std::endl;
 
-    // named semaphore
-    std::string semName = "/" + server_config_.serverId + "_" + server_config_.clusterId + "_" + "followers.txt";
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+    // named semaphore - match synchronizer naming: clusterID_subdirectory_filename
+    std::string semName = "/" + server_config_.clusterId + "_" + server_config_.serverId + "_" + "followers.txt";
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0666, 1);
+
+    if (fileSem == SEM_FAILED) {
+        std::cerr << "ReloadAllFollowers: Failed to open semaphore" << std::endl;
+        return Status::OK;
+    }
 
     // lock the file
-    if (fileSem) {
-        sem_wait(fileSem);
-    }
+    sem_wait(fileSem);
 
     // for each client, reload its follower list
     // find the client in client_db first
@@ -680,9 +686,8 @@ class SNSServiceImpl final : public SNSService::Service {
     }
 
     // unlock the file
-    if (fileSem) {
-        sem_post(fileSem);
-    }
+    sem_post(fileSem);
+    sem_close(fileSem);
 
     std::cout << "[server " << server_config_.serverId
               << "] ReloadFollowers EXIT" << std::endl;
@@ -868,7 +873,12 @@ std::vector<std::string> split_lines(const std::string& text) {
     std::string line;
 
     while (std::getline(ss, line)) {
-        lines.push_back(line);
+        // Trim whitespace and skip empty lines
+        line.erase(0, line.find_first_not_of(" \t\r\n"));
+        line.erase(line.find_last_not_of(" \t\r\n") + 1);
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
     }
     return lines;
 }
