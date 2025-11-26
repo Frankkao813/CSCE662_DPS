@@ -432,10 +432,16 @@ public:
 
         std::cerr << "consuming user lists from " << server_ids.size() << " synchronizers\n";
 
+        bool hasChanges = false; // Track if any changes were made
 
         // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
         for (int id : server_ids)
         {
+            // Skip consuming from our own queue - we already have our own data
+            if (id == synchID) {
+                std::cout << "consumeClientRelations: Skipping own queue synch" << id << "_clients_relations_queue" << std::endl;
+                continue;
+            }
 
             std::string queueName = "synch" + std::to_string(id) + "_clients_relations_queue";
             //std::string message = consumeMessage(queueName, 1000); // 1 second timeout
@@ -474,6 +480,7 @@ public:
                                 if (!file_contains_user(followerFile, follower.asString()))
                                 {
                                     followerStream << follower.asString() << std::endl;
+                                    hasChanges = true; // Mark that we made a change
                                 }
                             }
                         }
@@ -485,8 +492,10 @@ public:
             }
         }
 
-        // reload the follower relationship
-        notifyServersToReloadFollowers(std::to_string(clusterID), clusterSubdirectory);
+        // Only reload if there were actual changes
+        if (hasChanges) {
+            notifyServersToReloadFollowers(std::to_string(clusterID), clusterSubdirectory);
+        }
     }
 
     // for every client in your cluster, update all their followers' timeline files
@@ -788,7 +797,7 @@ void RunServer(std::string coordIP, std::string coordPort, std::string port_no, 
         while (true) {
             try {
                 rabbitMQ.consumeUserLists();
-                //rabbitMQ.consumeClientRelations();
+                rabbitMQ.consumeClientRelations();
                 //rabbitMQ.consumeTimelines();
             } catch (const std::exception& e) {
                 std::cerr << "Exception in consumer thread: " << e.what() << std::endl;
@@ -969,7 +978,7 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
         rabbitMQ.publishUserList();
 
         // Publish client relations
-        //rabbitMQ.publishClientRelations();
+        rabbitMQ.publishClientRelations();
 
         // Publish timelines
         //rabbitMQ.publishTimelines();

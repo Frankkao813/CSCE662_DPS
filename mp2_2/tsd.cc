@@ -341,6 +341,15 @@ class SNSServiceImpl final : public SNSService::Service {
 
     std::string uname = request -> username();
     std::string target = request -> arguments(0);
+    
+    std::cout << "Follow RPC: user '" << uname << "' wants to follow '" << target << "'" << std::endl;
+    std::cout << "Current client_db size: " << client_db.size() << std::endl;
+    std::cout << "Users in client_db: ";
+    for (auto* c : client_db) {
+        std::cout << c->username << " ";
+    }
+    std::cout << std::endl;
+    
     // Failure: A person can't follow himself
     if (uname == target) {
       reply -> set_msg("A person can't follow himself.");
@@ -348,29 +357,55 @@ class SNSServiceImpl final : public SNSService::Service {
     }
 
     // Failure: A person can't follow non-existent person
-    if (findClientByName(target) == nullptr){
+    Client* target_client = findClientByName(target);
+    if (target_client == nullptr){
+      std::cout << "ERROR: Target user '" << target << "' not found in client_db" << std::endl;
       reply -> set_msg("Following non-existent user.");
       return Status::OK;
     }
 
     // handle duplicate push cade
     Client* c1 = findClientByName(uname);
-    Client* c2 = findClientByName(target);
+    if (c1 == nullptr) {
+      std::cout << "ERROR: Requesting user '" << uname << "' not found in client_db" << std::endl;
+      reply -> set_msg("Requesting user does not exist.");
+      return Status::OK;
+    }
+    
+    Client* c2 = target_client;
+    
+    std::cout << "c1=" << (c1 ? c1->username : "NULL") << ", c2=" << (c2 ? c2->username : "NULL") << std::endl;
+    
+    bool needsFileWrite = false;  // Track if we need to write to file
+    
     if (c1 != nullptr && c2 != nullptr){
         //  bool isInVector(const std::vector<Client*>& v, const Client* who)
-        // both should be false
+        // both should be false for a new follow
         bool c1_in_c2_follower = isInVector(c2 -> client_followers, c1); 
         bool c2_in_c1_following = isInVector(c1 -> client_following, c2);
-        // std::cout << "c1_in_c2_follower: " << c1_in_c2_follower << std::endl;
-        // std::cout << "c2_in_c1_follower: " << c2_in_c1_following << std::endl;
-        if (!c1_in_c2_follower && !c2_in_c1_following){
-          c1 -> client_following.push_back(c2);
-          c2 -> client_followers.push_back(c1);
-        }
-        else {
+        std::cout << "c1_in_c2_follower=" << c1_in_c2_follower << ", c2_in_c1_following=" << c2_in_c1_following << std::endl;
+        
+        // If BOTH sides already exist, relationship is complete
+        if (c1_in_c2_follower && c2_in_c1_following){
+          std::cout << "Already followed - returning" << std::endl;
           reply ->set_msg("Already followed.");
           return Status::OK;
         }
+        
+        // Otherwise, ensure both sides exist (fixes partial relationships)
+        if (!c2_in_c1_following) {
+          std::cout << "Adding c2 to c1's following list..." << std::endl;
+          c1 -> client_following.push_back(c2);
+        }
+        if (!c1_in_c2_follower) {
+          std::cout << "Adding c1 to c2's followers list..." << std::endl;
+          c2 -> client_followers.push_back(c1);
+          needsFileWrite = true;  // Only write if we added to followers
+        }
+    } else {
+        std::cout << "ERROR: Unexpected null pointer after validation!" << std::endl;
+        reply->set_msg("Internal error");
+        return Status::OK;
     }
 
     // see that if the relationship is saved
@@ -385,20 +420,23 @@ class SNSServiceImpl final : public SNSService::Service {
     }
     std::cout << std::endl;
 
+    std::cout << "SUCCESS: Follow relationship created successfully" << std::endl;
     reply -> set_msg("Follow successful");
-    // write to file
-    try {
-      std::string server_folder = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/";
-      std::cout << server_folder << std::endl;
-      std::filesystem::create_directories(server_folder);
-      // std::string user_file = server_folder + uname + "_follow_list.txt";
-      std::string user_file = server_folder + target + "_followers.txt";
-      std::ofstream out(user_file, std::ios::app);
-      if (out) {
-        out << uname << "\n"; // the username is written in the file
+    
+    // write to file ONLY if we actually added to the followers list
+    if (needsFileWrite) {
+      try {
+        std::string server_folder = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/";
+        std::cout << server_folder << std::endl;
+        std::filesystem::create_directories(server_folder);
+        std::string user_file = server_folder + target + "_followers.txt";
+        std::ofstream out(user_file, std::ios::app);
+        if (out) {
+          out << uname << "\n"; // the username is written in the file
+        }
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to write user file: " << e.what();
       }
-    } catch (const std::exception& e) {
-      LOG(ERROR) << "Failed to write user file: " << e.what();
     }
 
 
