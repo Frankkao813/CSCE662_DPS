@@ -48,6 +48,7 @@
 #include <grpc++/grpc++.h>
 #include<glog/logging.h>
 #include<thread>
+#include<optional>
 // #define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity); 
 
 #include "sns.grpc.pb.h"
@@ -187,9 +188,14 @@ bool append_to_file(const std::string& folder, const std::string& filename, cons
 }
 
 //TODO: implement this function
-std::vector<Message> recent_20_messages(std::string username, ServerConfig config){
+std::vector<Message> recent_20_messages(std::string username, ServerConfig config, std::optional<int> z = std::nullopt){
   // This has to be changed because the folder format has already changed.
   // std::string folder = "user";
+  if (z.has_value()) {
+      std::cout << "Server " << config.serverId << " received request for " << z.value() << " messages for user " << username <<  std::endl;
+      std::cout << "Server " << config.serverId << " returning " << z.value() / 3 << " messages for user " << username <<  "instead" << std::endl;
+  }
+
   std::string basefolder = "./cluster/" + config.clusterId + "/" + config.serverId + "/";
   std::string filename = username + "_following.txt";
   std::string full_path = basefolder + "/" + filename;
@@ -236,12 +242,18 @@ std::vector<Message> recent_20_messages(std::string username, ServerConfig confi
     messages.push_back(m);
   }
 
-  // I reverse the array and then take the last 20
+  // I reverse the array and then take the last 20 (or z if specified)
   std::reverse(messages.begin(), messages.end());
-  // take into account the number of messages in the vector
-  int num_consider = std::min<size_t>(20, messages.size());
-  std::vector<Message> newest_20_messages(messages.begin(), messages.begin() + num_consider);
-  return newest_20_messages;
+  
+  // If z is specified, return the z newest messages; otherwise return 20
+  int num_consider = z.has_value() ? std::min<size_t>(z.value(), messages.size()) 
+                                    : std::min<size_t>(20, messages.size());
+  std::vector<Message> newest_messages(messages.begin(), messages.begin() + num_consider);
+
+  if (z.has_value()) {
+      std::cout << "Server returning " << newest_messages.size() << " messages for user " << username << std::endl;
+  }
+  return newest_messages;
 
 }
 
@@ -732,6 +744,46 @@ class SNSServiceImpl final : public SNSService::Service {
 
     return Status::OK;
   }
+
+    Status ReloadAllTimelines(ServerContext* context, const Empty* request, CoordConfirmation* reply) override {
+      std::cout << "ReloadAllTimelines called" << std::endl;
+      // If we detect that there is new posts in _following.txt
+      std::string clientId = server_config_.clusterId;
+      std::string filename = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/" + clientId + "_following.txt";
+      // 
+      std::cout << "reading from "    << filename << std::endl;
+      std::string content = read_file(filename);
+      std::vector<std::string> lines = split_lines(content);
+      int file_size = lines.size();
+      std::cout << "At the current file " << filename << " the file size is " <<  file_size << std::endl;
+      Client* c = findClientByName(clientId);
+      if (file_size > c->following_file_size) {
+        // there are new posts
+        int old_size = c->following_file_size;
+        c->following_file_size = file_size;
+        
+        // Each message is 3 lines (T, U, W) since split_lines filters blank lines
+        int new_lines = file_size - old_size;
+        int new_message_count = new_lines / 3;
+        
+        std::cout << "Detected " << new_message_count << " new messages for user " 
+                  << clientId << " (" << new_lines << " new lines)" << std::endl;
+        
+        // I need to only read the new posts and push to timeline
+        std::vector<Message> recent_msgs = recent_20_messages(clientId, server_config_, new_message_count);
+        // push the result back to people
+        if (c -> stream){
+          std::cout << "Pushing " << recent_msgs.size() << " new messages to user " << clientId << std::endl;
+          for (auto msg:recent_msgs){
+            c->stream->Write(msg);
+          }
+        }
+
+      }
+
+      return Status::OK;
+    
+    }
 
    private:
     ServerConfig server_config_;

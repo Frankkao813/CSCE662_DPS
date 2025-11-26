@@ -139,6 +139,7 @@ void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInf
 std::unique_ptr<csce438::CoordService::Stub> coordinator_stub_;
 void notifyServersToReloadUsers(std::string clusterID, std::string clusterSubdirectory);  // forward declaration
 void notifyServersToReloadFollowers(std::string clusterID, std::string clusterSubdirectory);  // forward declaration
+void  notifyServersToReloadTimeline(std::string clusterID, std::string clusterSubdirectory); // forward declaration
 // some port mapping (should be corrected later)
 std::unordered_map<std::string, int> myMap = {
     {"1_1", 10000},
@@ -653,9 +654,11 @@ public:
                 std::cout << "consumeTimelines: updating timeline for receiver " << receiver << std::endl;
                 const Json::Value &postsJSON = root["post"]; // array of posts
 
+                bool postWritten = false;
                 for (const auto &postEntry : postsJSON) {
                     for (const auto &lineVal : postEntry) {
                         timelineStream << lineVal.asString() << std::endl;
+                        postWritten = true;
                     }
                 }
 
@@ -667,6 +670,10 @@ public:
                 sem_close(fileSem);
             
 
+                if (postWritten) {
+                    // issue rpc call
+                     notifyServersToReloadTimeline(std::to_string(clusterID), clusterSubdirectory);   
+                }
 
             }
 
@@ -1252,5 +1259,42 @@ void notifyServersToReloadFollowers(std::string clusterID, std::string clusterSu
         std::cerr << "Exception in notifyServersToReloadFollowers: " << e.what() << std::endl;
     } catch (...) {
         std::cerr << "Unknown exception in notifyServersToReloadFollowers" << std::endl;
+    }
+}
+
+void  notifyServersToReloadTimeline(std::string clusterID, std::string clusterSubdirectory){
+    try {
+        std::string host = "localhost";
+
+        std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
+
+        // time the RPC calls
+        std::cout << "Notifying server at " << host << ":" << port << " to reload timelines." << std::endl;
+        auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
+        std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
+
+        Empty req;
+        CoordConfirmation resp;
+        ClientContext context;
+        
+        // Add 2 second timeout to prevent blocking indefinitely
+        std::chrono::system_clock::time_point deadline = 
+            std::chrono::system_clock::now() + std::chrono::seconds(2);
+        context.set_deadline(deadline);
+
+        Status status = stub->ReloadAllTimelines(&context, req, &resp);
+
+        if (!status.ok()) {
+            log(ERROR, "ReloadAllTimelines RPC failed: " + status.error_message());
+            std::cout << "ReloadAllTimelines RPC failed: " << status.error_message() << std::endl;
+        } else {
+            log(INFO, "ReloadAllTimelines RPC succeeded");
+            std::cout << "ReloadAllTimelines RPC succeeded" << std::endl;
+        }
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Exception in notifyServerToReloadTimeline: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Unknown exception in notifyServerToReloadTimeline" << std::endl;
     }
 }
