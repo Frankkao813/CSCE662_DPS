@@ -67,15 +67,22 @@ void IClient::displayCommandReply(const std::string& comm, const IReply& reply) 
     case SUCCESS:
       std::cout << "Command completed successfully\n";
       if (comm == "LIST") {
-	std::cout << "All users: ";
-	for (std::string room : reply.all_users) {
-	  std::cout << room << ", ";
-	}
-	std::cout << "\nFollowers: ";
-	for (std::string room : reply.followers) {
-	  std::cout << room << ", ";
-	}
-	std::cout << std::endl;
+            // Make local copies
+            auto all_users = reply.all_users;
+            auto followers = reply.followers;
+
+            // Sort the local copies
+            std::sort(all_users.begin(), all_users.end());
+            std::sort(followers.begin(), followers.end());
+        std::cout << "All users: ";
+        for (std::string room : all_users) {
+          std::cout << room << ", ";
+        }
+        std::cout << "\nFollowers: ";
+        for (std::string room : followers) {
+          std::cout << room << ", ";
+        }
+        std::cout << std::endl;
       }
       break;
     case FAILURE_ALREADY_EXISTS:

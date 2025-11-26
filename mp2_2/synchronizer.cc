@@ -345,20 +345,20 @@ public:
     void consumeUserLists()
     {
         std::cerr << "consumeUserLists() entered for synchID=" << synchID << std::endl;
-        std::unordered_set<std::string> allUsersSet; // Use set to avoid duplicates
+        std::unordered_set<std::string> allUsersSet; // avoiding duplicates
 
         std::vector<int> server_ids;
         std::vector<std::string> hosts, ports;
         synchRegistry.snapshot(server_ids, hosts, ports);
         
-        std::cout << "consumeUserLists: Will consume from " << server_ids.size() << " synchronizer queues" << std::endl;
-        for (int id : server_ids) {
-            std::cout << "  - synch" << id << "_users_queue" << std::endl;
-        }
+        // std::cout << "consumeUserLists: Will consume from " << server_ids.size() << " synchronizer queues" << std::endl;
+        // for (int id : server_ids) {
+        //     std::cout << "  - synch" << id << "_users_queue" << std::endl;
+        // }
 
         for (int id : server_ids)
         {
-            // Skip consuming from our own queue - we already have our own users
+            // skip consuming from our own queue - we already have our own users
             if (id == synchID) {
                 std::cout << "consumeUserLists: Skipping own queue synch" << id << "_users_queue" << std::endl;
                 continue;
@@ -367,7 +367,7 @@ public:
             std::string queueName = "synch" + std::to_string(id) + "_users_queue";
             std::cout << "consumeUserLists: Attempting to read from " << queueName << std::endl;
             
-            // Read only ONE message per queue to give other consumers a chance
+            // read only ONE message per queue to give other consumers a chance
             std::string message = basicGet(queueName);
             if (message.empty()) {
                 std::cout << "  No messages in " << queueName << std::endl;
@@ -383,7 +383,7 @@ public:
                     {
                         std::string userName = user.asString();
                         allUsersSet.insert(userName);
-                        std::cout << "  - Extracted user: " << userName << std::endl;
+                        // std::cout << "  - Extracted user: " << userName << std::endl;
                     }
                 }
             }
@@ -433,9 +433,9 @@ public:
 
         std::cerr << "consuming user lists from " << server_ids.size() << " synchronizers\n";
 
-        bool hasChanges = false; // Track if any changes were made
+        bool hasChanges = false; 
 
-        // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
+
         for (int id : server_ids)
         {
             // Skip consuming from our own queue - we already have our own data
@@ -445,8 +445,7 @@ public:
             }
 
             std::string queueName = "synch" + std::to_string(id) + "_clients_relations_queue";
-            //std::string message = consumeMessage(queueName, 1000); // 1 second timeout
-            std::string message = basicGet(queueName); // <--- key change
+            std::string message = basicGet(queueName); 
             if (!message.empty())
             {
                 Json::Value root;
@@ -570,14 +569,14 @@ public:
                     std::string queueName = "synch" + std::to_string(id) + "_timeline_queue";
                     std::cout <<"User " << clientId << " Publishing to queue " << queueName << " for follower " << followerId << std::endl;
 
-                    // Send all *new* posts for this author to this synchronizer
+                    // send all new posts to this follower
                     Json::Value timelineEntry;
 
                 
                     timelineEntry["receiver"] = follower;
                     timelineEntry["post"] = posts;
 
-                    static Json::FastWriter writer;  // can reuse
+                    static Json::FastWriter writer; 
                     std::string message = writer.write(timelineEntry);
                     publishMessage(queueName, message);
                     std::cout << "Published " << posts.size() << " new posts from user " << clientId << " to follower " << followerId << " via synchronizer " << id << std::endl;
@@ -586,19 +585,18 @@ public:
             
 
             }
-            // We have now sent all posts up to totalPosts for this user
+            // send all posts up to totalPosts for this user
             timelineLengths[client] = totalPosts;
             std::cout << "User " << clientId << " timeline updated to " << totalPosts << " posts." << std::endl;
         }
     }
 
-    // For each client in your cluster, consume messages from your timeline queue and modify your client's timeline files based on what the users they follow posted to their timeline
+    // for each client in your cluster, consume messages from your timeline queue and modify your client's timeline files based on what the users they follow posted to their timeline
     void consumeTimelines()
     {
 
         std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue";
-        //std::string message = consumeMessage(queueName, 1000); // 1 second timeout
-        std::string message = basicGet(queueName); // <--- key change
+        std::string message = basicGet(queueName); 
         std::cout << "consumeTimelines: raw message: " << message <<  " from " << queueName << std::endl;
 
         if (!message.empty())
