@@ -14,4 +14,8 @@ pkill -f "./tsc"
 
 pkill -f "./synchronizer"
 
+# Clean up semaphores
+echo "Cleaning up semaphores..."
+rm -f /dev/shm/sem.*
+
 # rm -rf cluster_*

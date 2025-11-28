@@ -1,0 +1,210 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    /* ---------- COORDINATOR (shared) ---------- */
+    {
+      "label": "Coordinator",
+      "type": "shell",
+      "command": "echo \"Cleaning up old semaphores...\" && rm -f /dev/shm/sem.* && rm -rf cluster/* && echo \"STARTING COORDINATOR (p=9000)\" && ./coordinator -p 9000",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+
+    /* ---------- TSD PROCESSES (used by both BASIC + FULL) ---------- */
+    {
+      "label": "TSD c1 s1",
+      "type": "shell",
+      "command": "sleep 4 && echo \"STARTING TSD c1 s1 (p=10000)\" && ./tsd -c 1 -s 1 -h localhost -k 9000 -p 10000",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TSD c2 s1",
+      "type": "shell",
+      "command": "sleep 4 && echo \"STARTING TSD c2 s1 (p=20000)\" && ./tsd -c 2 -s 1 -h localhost -k 9000 -p 20000",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TSD c3 s1",
+      "type": "shell",
+      "command": "sleep 4 && echo \"STARTING TSD c3 s1 (p=30000)\" && ./tsd -c 3 -s 1 -h localhost -k 9000 -p 30000",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+
+    {
+      "label": "TSD c1 s2",
+      "type": "shell",
+      "command": "sleep 5 && echo \"STARTING TSD c1 s2 (p=10001)\" && ./tsd -c 1 -s 2 -h localhost -k 9000 -p 10001",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TSD c2 s2",
+      "type": "shell",
+      "command": "sleep 5 && echo \"STARTING TSD c2 s2 (p=20001)\" && ./tsd -c 2 -s 2 -h localhost -k 9000 -p 20001",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TSD c3 s2",
+      "type": "shell",
+      "command": "sleep 5 && echo \"STARTING TSD c3 s2 (p=30001)\" && ./tsd -c 3 -s 2 -h localhost -k 9000 -p 30001",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+
+    /* ---------- SYNCHRONIZERS (FULL setup) ---------- */
+    {
+      "label": "Synchronizer 1",
+      "type": "shell",
+      "command": "sleep 6 && echo \"STARTING SYNCHRONIZER 1 (p=9001)\" && ./synchronizer -h localhost -k 9000 -p 9001 -i 1",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Synchronizer 2",
+      "type": "shell",
+      "command": "sleep 6 && echo \"STARTING SYNCHRONIZER 2 (p=9002)\" && ./synchronizer -h localhost -k 9000 -p 9002 -i 2",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Synchronizer 3",
+      "type": "shell",
+      "command": "sleep 6 && echo \"STARTING SYNCHRONIZER 3 (p=9003)\" && ./synchronizer -h localhost -k 9000 -p 9003 -i 3",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Synchronizer 4",
+      "type": "shell",
+      "command": "sleep 6 && echo \"STARTING SYNCHRONIZER 4 (p=9004)\" && ./synchronizer -h localhost -k 9000 -p 9004 -i 4",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Synchronizer 5",
+      "type": "shell",
+      "command": "sleep 6 && echo \"STARTING SYNCHRONIZER 5 (p=9005)\" && ./synchronizer -h localhost -k 9000 -p 9005 -i 5",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Synchronizer 6",
+      "type": "shell",
+      "command": "sleep 6 && echo \"STARTING SYNCHRONIZER 6 (p=9006)\" && ./synchronizer -h localhost -k 9000 -p 9006 -i 6",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+
+    /* ---------- CLIENTS ---------- */
+
+    /* Fast clients from tasks0.json (for BASIC runs) */
+    {
+      "label": "TSC u1 (fast)",
+      "type": "shell",
+      "command": "sleep 6 && echo \"START CLIENT u1 (fast)\" && ./tsc -h localhost -k 9000 -u 1",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TSC u4",
+      "type": "shell",
+      "command": "sleep 6 && echo \"START CLIENT u4\" && ./tsc -h localhost -k 9000 -u 4",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+
+    /* Delayed clients from full cluster config */
+    {
+      "label": "TSC u1 (delayed)",
+      "type": "shell",
+      "command": "sleep 55 && echo \"START CLIENT u1 (delayed)\" && ./tsc -h localhost -k 9000 -u 1",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TSC u2 (delayed)",
+      "type": "shell",
+      "command": "sleep 55 && echo \"START CLIENT u2 (delayed)\" && ./tsc -h localhost -k 9000 -u 2",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TSC u3 (delayed)",
+      "type": "shell",
+      "command": "sleep 55 && echo \"START CLIENT u3 (delayed)\" && ./tsc -h localhost -k 9000 -u 3",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+
+    /* ---------- MASTER TASKS ---------- */
+
+    /* BASIC: coordinator + 2 TSDs + fast clients u1/u4 */
+    {
+      "label": "Start BASIC",
+      "type": "shell",
+      "command": "echo \"Starting BASIC setup...\"",
+      "dependsOn": [
+        "Coordinator",
+        "TSD c1 s1",
+        "TSD c1 s2",
+        "TSC u1 (fast)",
+        "TSC u4"
+      ],
+      "dependsOrder": "parallel",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    },
+
+    /* FULL CLUSTER: all TSDs, all synchronizers, delayed clients u1/u2/u3 */
+    {
+      "label": "Start FULL (each in its own terminal)",
+      "type": "shell",
+      "command": "echo \"Starting FULL SNS cluster in separate terminals...\"",
+      "dependsOn": [
+        "Coordinator",
+        "TSD c1 s1",
+        "TSD c2 s1",
+        "TSD c3 s1",
+        "TSD c1 s2",
+        "TSD c2 s2",
+        "TSD c3 s2",
+        "Synchronizer 1",
+        "Synchronizer 2",
+        "Synchronizer 3",
+        "Synchronizer 4",
+        "Synchronizer 5",
+        "Synchronizer 6",
+        "TSC u1 (delayed)",
+        "TSC u2 (delayed)",
+        "TSC u3 (delayed)"
+      ],
+      "dependsOrder": "parallel",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": []
+    }
+  ]
+}

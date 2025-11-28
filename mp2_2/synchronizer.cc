@@ -86,6 +86,28 @@ std::vector<std::string> get_tl_or_fl(int, int, bool);
 std::vector<std::string> getFollowersOfUser(int);
 bool file_contains_user(std::string filename, std::string user);
 
+// sanitizing semaphore components
+std::string sanitizeSemComponent(const std::string &input) {
+    std::string output;
+    for (char c : input) {
+        if (c == '/'){
+            output += "_";
+        }
+        else{
+            output += c;
+        }
+    }
+    return output;
+}
+
+
+std::string makeSemaphoreName(const std::string &filename) {
+    // for instance, filename = "cluster/1/1/all_users.txt"
+    // should return "/1_1_all_users.txt"
+    std::string base = std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + filename;
+    return "/" + sanitizeSemComponent(base);
+}
+
 struct SynchronizerRegistry{
     std::mutex mu;
     std::vector<int> server_ids;
@@ -117,6 +139,7 @@ void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInf
 std::unique_ptr<csce438::CoordService::Stub> coordinator_stub_;
 void notifyServersToReloadUsers(std::string clusterID, std::string clusterSubdirectory);  // forward declaration
 void notifyServersToReloadFollowers(std::string clusterID, std::string clusterSubdirectory);  // forward declaration
+void  notifyServersToReloadTimeline(std::string clusterID, std::string clusterSubdirectory); // forward declaration
 // some port mapping (should be corrected later)
 std::unordered_map<std::string, int> myMap = {
     {"1_1", 10000},
@@ -127,70 +150,182 @@ std::unordered_map<std::string, int> myMap = {
     {"3_2", 30001}
 };
 
-class SynchronizerRabbitMQ
-{
+class SynchronizerRabbitMQ {
 private:
-    amqp_connection_state_t conn;
-    amqp_channel_t channel;
     std::string hostname;
     int port;
     int synchID;
 
-    void setupRabbitMQ()
-    {
-        conn = amqp_new_connection();
-        amqp_socket_t *socket = amqp_tcp_socket_new(conn);
-        amqp_socket_open(socket, hostname.c_str(), port);
-        amqp_login(conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN, "guest", "guest");
-        amqp_channel_open(conn, channel);
-    }
+    amqp_connection_state_t conn;
+    amqp_channel_t publish_channel;   // for all publish/declare/purge
+    amqp_channel_t consume_channel;   // for all basic_get / read_message
 
-    void declareQueue(const std::string &queueName)
-    {
-        amqp_queue_declare(conn, channel, amqp_cstring_bytes(queueName.c_str()),
-                           0, 0, 0, 0, amqp_empty_table);
-    }
-
-    void publishMessage(const std::string &queueName, const std::string &message)
-    {
-        amqp_basic_publish(conn, channel, amqp_empty_bytes, amqp_cstring_bytes(queueName.c_str()),
-                           0, 0, NULL, amqp_cstring_bytes(message.c_str()));
-    }
-
-    std::string consumeMessage(const std::string &queueName, int timeout_ms = 5000)
-    {
-        amqp_basic_consume(conn, channel, amqp_cstring_bytes(queueName.c_str()),
-                           amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
-
-        amqp_envelope_t envelope;
-        amqp_maybe_release_buffers(conn);
-
-        struct timeval timeout;
-        timeout.tv_sec = timeout_ms / 1000;
-        timeout.tv_usec = (timeout_ms % 1000) * 1000;
-
-        amqp_rpc_reply_t res = amqp_consume_message(conn, &envelope, &timeout, 0);
-
-        if (res.reply_type != AMQP_RESPONSE_NORMAL)
-        {
-            return "";
-        }
-
-        std::string message(static_cast<char *>(envelope.message.body.bytes), envelope.message.body.len);
-        amqp_destroy_envelope(&envelope);
-        return message;
-    }
+    std::mutex amqpMutex;             // protect conn/channels across threads
 
 public:
-    // SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname(host), port(p), channel(1), synchID(id)
-    SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname("rabbitmq"), port(p), channel(1), synchID(id)
+    SynchronizerRabbitMQ(const std::string &host, int p, int id)
+        : hostname("rabbitmq"),        // your original choice
+          port(p),
+          synchID(id),
+          conn(nullptr),
+          publish_channel(1),
+          consume_channel(2)
     {
         setupRabbitMQ();
+
+        // Declare the queues that *this* synchronizer owns
         declareQueue("synch" + std::to_string(synchID) + "_users_queue");
         declareQueue("synch" + std::to_string(synchID) + "_clients_relations_queue");
         declareQueue("synch" + std::to_string(synchID) + "_timeline_queue");
-        // TODO: add or modify what kind of queues exist in your clusters based on your needs
+
+        // If you want to start from a clean state, you can purge your own queues here:
+        purgeQueue("synch" + std::to_string(synchID) + "_users_queue");
+        purgeQueue("synch" + std::to_string(synchID) + "_clients_relations_queue");
+        purgeQueue("synch" + std::to_string(synchID) + "_timeline_queue");
     }
+
+    ~SynchronizerRabbitMQ() {
+        std::lock_guard<std::mutex> lock(amqpMutex);
+        if (conn) {
+            amqp_channel_close(conn, publish_channel, AMQP_REPLY_SUCCESS);
+            amqp_channel_close(conn, consume_channel, AMQP_REPLY_SUCCESS);
+            amqp_connection_close(conn, AMQP_REPLY_SUCCESS);
+            amqp_destroy_connection(conn);
+        }
+    }
+
+private:
+    void setupRabbitMQ() {
+        std::lock_guard<std::mutex> lock(amqpMutex);
+
+        conn = amqp_new_connection();
+        amqp_socket_t *socket = amqp_tcp_socket_new(conn);
+        if (!socket) {
+            throw std::runtime_error("Failed to create AMQP socket");
+        }
+
+        int status = amqp_socket_open(socket, hostname.c_str(), port);
+        if (status) {
+            throw std::runtime_error("Failed to open AMQP socket");
+        }
+
+        amqp_rpc_reply_t login_reply = amqp_login(
+            conn, "/", 0, 131072, 0,
+            AMQP_SASL_METHOD_PLAIN, "guest", "guest");
+
+        if (login_reply.reply_type != AMQP_RESPONSE_NORMAL) {
+            throw std::runtime_error("AMQP login failed");
+        }
+
+        // Open one channel for publishing/declaring
+        amqp_channel_open(conn, publish_channel);
+        if (amqp_get_rpc_reply(conn).reply_type != AMQP_RESPONSE_NORMAL) {
+            throw std::runtime_error("Failed to open publish channel");
+        }
+
+        // Open one channel for consuming (basic_get)
+        amqp_channel_open(conn, consume_channel);
+        if (amqp_get_rpc_reply(conn).reply_type != AMQP_RESPONSE_NORMAL) {
+            throw std::runtime_error("Failed to open consume channel");
+        }
+    }
+
+    void declareQueue(const std::string &queueName) {
+        std::lock_guard<std::mutex> lock(amqpMutex);
+
+        amqp_queue_declare(conn,
+                           publish_channel,
+                           amqp_cstring_bytes(queueName.c_str()),
+                           0,   // passive
+                           0,   // durable
+                           0,   // exclusive
+                           0,   // auto-delete
+                           amqp_empty_table);
+        amqp_rpc_reply_t r = amqp_get_rpc_reply(conn);
+        if (r.reply_type != AMQP_RESPONSE_NORMAL) {
+            std::cerr << "Failed to declare queue " << queueName << std::endl;
+        }
+    }
+
+    void purgeQueue(const std::string &queueName) {
+        std::lock_guard<std::mutex> lock(amqpMutex);
+
+        amqp_queue_purge(conn, publish_channel,
+                         amqp_cstring_bytes(queueName.c_str()));
+        amqp_get_rpc_reply(conn); // ignore error for now
+    }
+
+public:
+    void publishMessage(const std::string &queueName, const std::string &message) {
+        std::lock_guard<std::mutex> lock(amqpMutex);
+
+        int status = amqp_basic_publish(
+            conn,
+            publish_channel,
+            amqp_empty_bytes, // default exchange
+            amqp_cstring_bytes(queueName.c_str()),
+            0,    // mandatory
+            0,    // immediate
+            NULL, // properties
+            amqp_cstring_bytes(message.c_str()));
+
+        if (status < 0) {
+            std::cerr << "Failed to publish to " << queueName
+                      << ": " << amqp_error_string2(status) << std::endl;
+        }
+    }
+
+private:
+    // Core helper: get one message from exactly this queue using basic_get.
+    std::string basicGet(const std::string &queueName) {
+        std::lock_guard<std::mutex> lock(amqpMutex);
+
+        amqp_rpc_reply_t reply = amqp_basic_get(
+            conn,
+            consume_channel,
+            amqp_cstring_bytes(queueName.c_str()),
+            1  // no_ack = 1: automatic ack
+        );
+
+        if (reply.reply_type != AMQP_RESPONSE_NORMAL) {
+            if (reply.reply_type == AMQP_RESPONSE_LIBRARY_EXCEPTION) {
+                std::cerr << "[basic_get] error on queue " << queueName
+                          << ": " << amqp_error_string2(reply.library_error)
+                          << std::endl;
+            }
+            return "";
+        }
+
+        if (reply.reply.id == AMQP_BASIC_GET_EMPTY_METHOD) {
+            // No message currently in this queue
+            return "";
+        }
+
+        amqp_message_t message;
+        amqp_rpc_reply_t msg_reply =
+            amqp_read_message(conn, consume_channel, &message, 0);
+
+        if (msg_reply.reply_type != AMQP_RESPONSE_NORMAL) {
+            std::cerr << "[read_message] failed on queue " << queueName << std::endl;
+            amqp_destroy_message(&message);
+            return "";
+        }
+
+        std::string body;
+        if (message.body.bytes && message.body.len > 0) {
+            body.assign(static_cast<char*>(message.body.bytes),
+                        static_cast<size_t>(message.body.len));
+        }
+
+        amqp_destroy_message(&message);
+        amqp_maybe_release_buffers(conn);
+        return body;
+    }
+
+
+
+public:
+
 
     void publishUserList()
     {
@@ -210,30 +345,53 @@ public:
     void consumeUserLists()
     {
         std::cerr << "consumeUserLists() entered for synchID=" << synchID << std::endl;
-        std::vector<std::string> allUsers;
+        std::unordered_set<std::string> allUsersSet; // avoiding duplicates
 
         std::vector<int> server_ids;
         std::vector<std::string> hosts, ports;
         synchRegistry.snapshot(server_ids, hosts, ports);
+        
+        // std::cout << "consumeUserLists: Will consume from " << server_ids.size() << " synchronizer queues" << std::endl;
+        // for (int id : server_ids) {
+        //     std::cout << "  - synch" << id << "_users_queue" << std::endl;
+        // }
 
         for (int id : server_ids)
         {
+            // skip consuming from our own queue - we already have our own users
+            if (id == synchID) {
+                std::cout << "consumeUserLists: Skipping own queue synch" << id << "_users_queue" << std::endl;
+                continue;
+            }
+            
             std::string queueName = "synch" + std::to_string(id) + "_users_queue";
-            std::string message = consumeMessage(queueName, 1000); // 1 second timeout
-            if (!message.empty())
-            {
+            std::cout << "consumeUserLists: Attempting to read from " << queueName << std::endl;
+            
+            // read only ONE message per queue to give other consumers a chance
+            std::string message = basicGet(queueName);
+            if (message.empty()) {
+                std::cout << "  No messages in " << queueName << std::endl;
+            } else {
+                std::cout << "Consumer (synch" << synchID << ") read from " << queueName 
+                          << ": " << message << std::endl;
+                
                 Json::Value root;
                 Json::Reader reader;
                 if (reader.parse(message, root))
                 {
                     for (const auto &user : root["users"])
                     {
-                        allUsers.push_back(user.asString());
+                        std::string userName = user.asString();
+                        allUsersSet.insert(userName);
+                        // std::cout << "  - Extracted user: " << userName << std::endl;
                     }
                 }
             }
         }
-        std::cerr << "go to update all users file with " << allUsers.size() << " users." << std::endl;
+        
+        // Convert set to vector
+        std::vector<std::string> allUsers(allUsersSet.begin(), allUsersSet.end());
+        std::cerr << "go to update all users file with " << allUsers.size() << " unique users." << std::endl;
         updateAllUsersFile(allUsers);
     }
 
@@ -275,13 +433,19 @@ public:
 
         std::cerr << "consuming user lists from " << server_ids.size() << " synchronizers\n";
 
-        // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
+        bool hasChanges = false; 
+
+
         for (int id : server_ids)
         {
+            // Skip consuming from our own queue - we already have our own data
+            if (id == synchID) {
+                std::cout << "consumeClientRelations: Skipping own queue synch" << id << "_clients_relations_queue" << std::endl;
+                continue;
+            }
 
             std::string queueName = "synch" + std::to_string(id) + "_clients_relations_queue";
-            std::string message = consumeMessage(queueName, 1000); // 1 second timeout
-
+            std::string message = basicGet(queueName); 
             if (!message.empty())
             {
                 Json::Value root;
@@ -291,8 +455,22 @@ public:
                     for (const auto &client : allUsers)
                     {
                         std::string followerFile = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + client + "_followers.txt";
-                        std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + client + "_followers.txt";
-                        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+                        //std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + client + "_followers.txt";
+                        std::string semName = makeSemaphoreName(client + "_followers.txt");
+                        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+                        // lock the file
+                        if (fileSem == SEM_FAILED) {
+                            // Try to recover by unlinking and recreating
+                            perror("consumeClientRelations: sem_open failed, trying to recover");
+                            sem_unlink(semName.c_str());
+                            fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+                            if (fileSem == SEM_FAILED) {
+                                perror("consumeClientRelations: sem_open recovery failed");
+                                continue;
+                            }
+                        } 
+
+                        sem_wait(fileSem);
 
                         std::ofstream followerStream(followerFile, std::ios::app | std::ios::out | std::ios::in);
                         if (root.isMember(client))
@@ -302,17 +480,22 @@ public:
                                 if (!file_contains_user(followerFile, follower.asString()))
                                 {
                                     followerStream << follower.asString() << std::endl;
+                                    hasChanges = true; // Mark that we made a change
                                 }
                             }
                         }
+
+                        sem_post(fileSem);
                         sem_close(fileSem);
                     }
                 }
             }
         }
 
-        // reload the follower relationship
-        notifyServersToReloadFollowers(std::to_string(clusterID), clusterSubdirectory);
+        // Only reload if there were actual changes
+        if (hasChanges) {
+            notifyServersToReloadFollowers(std::to_string(clusterID), clusterSubdirectory);
+        }
     }
 
     // for every client in your cluster, update all their followers' timeline files
@@ -320,61 +503,265 @@ public:
     //  periodically to the message queue of the synchronizer responsible for that client
     void publishTimelines()
     {
+        std::cout<< "Publishing timelines from synchronizer " << synchID << std::endl;
         std::vector<std::string> users = get_all_users_func(synchID);
+        std::cout << "There are " << users.size() << " users in this synchronizer." << std::endl;
+        std::vector<int> server_ids;
+        std::vector<std::string> hosts, ports;
+        synchRegistry.snapshot(server_ids, hosts, ports);
+
+        if (synchID % 2 == 0){
+            // we don't let the slave synchornizer publish timelines
+            std::cout << "This is a slave synchronizer, skipping timeline publishing." << std::endl;
+            return;
+        }
 
         for (const auto &client : users)
         {
             int clientId = std::stoi(client);
             int client_cluster = ((clientId - 1) % 3) + 1;
             // only do this for clients in your own cluster
-            if (client_cluster != clusterID)
-            {
+            if (client_cluster != clusterID){
                 continue;
             }
 
             std::vector<std::string> timeline = get_tl_or_fl(synchID, clientId, true);
+            std::cout << "Client " << clientId << " timeline has " << timeline.size() << " lines." << std::endl;
+            std::cout << "User " << clientId << " has " << timeline.size() / 3 << " posts in their timeline." << std::endl;
             std::vector<std::string> followers = getFollowersOfUser(clientId);
+
+            int totalPosts = timeline.size() / 3;
+            int oldPosts = 0;
+            if (timelineLengths.find(client) != timelineLengths.end()){
+                oldPosts = timelineLengths[client];
+            }
+            std::cout << "User " << clientId << " has " << oldPosts << " old posts in their timeline." << std::endl;
+            if (oldPosts >= totalPosts){
+                continue; // nothing new to send
+            }
+
+            Json::Value posts(Json::arrayValue);
+            for (int i = oldPosts * 3; i < totalPosts * 3; i += 3){
+                
+                Json::Value post(Json::arrayValue);
+                post.append(timeline[i + 0]); // "T ..."
+                post.append(timeline[i + 1]); // "U ..."
+                post.append(timeline[i + 2]); // "W ..."
+                post.append(""); // "" (blank)
+                posts.append(post);
+            }
+
+            if (posts.empty()){
+                continue;
+            }
 
             for (const auto &follower : followers)
             {
                 // send the timeline updates of your current user to all its followers
+                int followerId = std::stoi(follower);
+                int follower_cluster = ((followerId - 1) % 3) + 1;
+                // choose a synchronizer that is responsible for the follower
+                for (int id: server_ids){
+                    int syncCluster = ((id - 1) % 3) + 1;
+                    if (syncCluster != follower_cluster){ 
+                        continue;
+                    }
+                    std::string queueName = "synch" + std::to_string(id) + "_timeline_queue";
+                    std::cout <<"User " << clientId << " Publishing to queue " << queueName << " for follower " << followerId << std::endl;
 
-                // YOUR CODE HERE
+                    // send all new posts to this follower
+                    Json::Value timelineEntry;
+
+                
+                    timelineEntry["receiver"] = follower;
+                    timelineEntry["post"] = posts;
+
+                    static Json::FastWriter writer; 
+                    std::string message = writer.write(timelineEntry);
+                    publishMessage(queueName, message);
+                    std::cout << "Published " << posts.size() << " new posts from user " << clientId << " to follower " << followerId << " via synchronizer " << id << std::endl;
+                    std::cout << "the follower id is" << followerId << std::endl;
+                }
+            
+
             }
+            // send all posts up to totalPosts for this user
+            timelineLengths[client] = totalPosts;
+            std::cout << "User " << clientId << " timeline updated to " << totalPosts << " posts." << std::endl;
         }
     }
 
-    // For each client in your cluster, consume messages from your timeline queue and modify your client's timeline files based on what the users they follow posted to their timeline
+    // for each client in your cluster, consume messages from your timeline queue and modify your client's timeline files based on what the users they follow posted to their timeline
     void consumeTimelines()
     {
+
         std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue";
-        std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+        std::string message = basicGet(queueName); 
+        std::cout << "consumeTimelines: raw message: " << message <<  " from " << queueName << std::endl;
 
         if (!message.empty())
         {
             // consume the message from the queue and update the timeline file of the appropriate client with
             // the new updates to the timeline of the user it follows
+            Json::Value root;
+            Json::Reader reader;
+            if (reader.parse(message, root)){
+                std::string receiver = root["receiver"].asString();
+                std::cout << "consumeTimelines: updating timeline for receiver " << receiver << std::endl;
+                if (receiver.empty()) { // There might be no timeline messages or clients available
+                    std::cerr << "consumeTimelines: empty receiver, ignoring message\n";
+                    return;
+                }
 
-            // YOUR CODE HERE
+                if (!root.isMember("post") || !root["post"].isArray()) { // it fetch the wrong message
+                    std::cerr << "consumeTimelines: missing or invalid 'post', raw message: "
+                            << message << std::endl;
+                    return;
+                }
+
+
+
+                std::string timelineFile = "./cluster/" + std::to_string(clusterID) + "/" +
+                                        clusterSubdirectory + "/" + receiver + "_following.txt";
+                std::string semName = makeSemaphoreName(receiver + "_following.txt");
+                std::cout << "Updating following file " << timelineFile << " for client " << receiver << std::endl;
+
+                sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+                if (fileSem == SEM_FAILED) {
+                    // Try to recover by unlinking and recreating
+                    perror("consumeTimelines: sem_open failed, trying to recover");
+                    sem_unlink(semName.c_str());
+                    fileSem = sem_open(semName.c_str(), O_CREAT, 0644, 1);
+                    if (fileSem == SEM_FAILED) {
+                        perror("consumeTimelines: sem_open recovery failed");
+                        return;
+                    }
+                }
+
+                // protect writes with semaphore, open file in append mode
+                sem_wait(fileSem);
+                std::cout << "start to write to " << timelineFile << std::endl;
+                std::ofstream timelineStream(timelineFile, std::ios::app);
+                if (!timelineStream.is_open()) {
+                    std::cerr << "consumeTimelines: could not open " << timelineFile << std::endl;
+                    sem_post(fileSem);
+                    sem_close(fileSem);
+                    return;
+                }
+
+                std::cout << "consumeTimelines: updating timeline for receiver " << receiver << std::endl;
+                const Json::Value &postsJSON = root["post"]; // array of posts
+
+                bool postWritten = false;
+                for (const auto &postEntry : postsJSON) {
+                    for (const auto &lineVal : postEntry) {
+                        timelineStream << lineVal.asString() << std::endl;
+                        postWritten = true;
+                    }
+                }
+
+                timelineStream.close();
+
+                
+
+                sem_post(fileSem);
+                sem_close(fileSem);
+            
+
+                if (postWritten) {
+                    // issue rpc call
+                     notifyServersToReloadTimeline(std::to_string(clusterID), clusterSubdirectory);   
+                }
+
+            }
+
         }
     }
 
 private:
     void updateAllUsersFile(const std::vector<std::string> &users)
     {
+        // Create directory structure if it doesn't exist
+        std::string dirPath = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory;
+        try {
+            std::filesystem::create_directories(dirPath);
+            std::cout << "updateAllUsersFile: ensured directory exists: " << dirPath << std::endl;
+        } catch (const std::filesystem::filesystem_error& e) {
+            std::cerr << "updateAllUsersFile: failed to create directory " << dirPath 
+                      << ": " << e.what() << std::endl;
+            return;
+        }
 
         std::string usersFile = "./cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/all_users.txt";
-        std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_all_users.txt";
-        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
-
-        std::ofstream userStream(usersFile, std::ios::app | std::ios::out | std::ios::in);
-        for (std::string user : users)
-        {
-            if (!file_contains_user(usersFile, user))
-            {
-                userStream << user << std::endl;
+        
+        // Read existing users OUTSIDE the write lock to avoid deadlock
+        std::vector<std::string> existingUsers = get_lines_from_file(usersFile);
+        std::unordered_set<std::string> existingSet(existingUsers.begin(), existingUsers.end());
+        
+        std::cout << "updateAllUsersFile: existing users in " << usersFile << ": ";
+        for (const auto& u : existingUsers) {
+            std::cout << u << " ";
+        }
+        std::cout << std::endl;
+        
+        // Filter out users that already exist
+        std::vector<std::string> newUsers;
+        for (const std::string &user : users) {
+            if (existingSet.find(user) == existingSet.end()) {
+                newUsers.push_back(user);
+                std::cout << "  User '" << user << "' is NEW, will add" << std::endl;
+            } else {
+                std::cout << "  User '" << user << "' already exists, skipping" << std::endl;
             }
         }
+        
+        if (newUsers.empty()) {
+            std::cout << "updateAllUsersFile: no new users to add" << std::endl;
+            return;
+        }
+        
+        // Now acquire lock and write only new users
+        std::string semName = makeSemaphoreName("all_users.txt");
+        
+        // Try O_EXCL first (create new), if fails then open existing
+        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT | O_EXCL, 0666, 1);
+        if (fileSem == SEM_FAILED && errno == EEXIST) {
+            // Semaphore exists, try to open it
+            fileSem = sem_open(semName.c_str(), 0);
+            if (fileSem == SEM_FAILED) {
+                // Existing semaphore is corrupted, unlink and recreate
+                std::cerr << "updateAllUsersFile: existing semaphore corrupted, unlinking and recreating" << std::endl;
+                sem_unlink(semName.c_str());
+                fileSem = sem_open(semName.c_str(), O_CREAT | O_EXCL, 0666, 1);
+            }
+        }
+        if (fileSem == SEM_FAILED) {
+            perror("updateAllUsersFile: sem_open");
+            std::cerr << "updateAllUsersFile: semaphore name was: " << semName << std::endl;
+            return;
+        }
+        sem_wait(fileSem);
+
+        std::ofstream userStream(usersFile, std::ios::app);
+        if (!userStream.is_open()) {
+            std::cerr << "updateAllUsersFile: could not open " << usersFile 
+                      << " (errno: " << strerror(errno) << ")" << std::endl;
+            sem_post(fileSem);
+            sem_close(fileSem);
+            return;
+        }
+        
+        for (const std::string &user : newUsers) {
+            userStream << user << std::endl;
+            std::cout << "  Wrote user '" << user << "' to " << usersFile << std::endl;
+        }
+        
+        // Explicitly close the file to flush buffer before releasing semaphore
+        userStream.close();
+        
+        std::cout << "updateAllUsersFile: added " << newUsers.size() << " new users to " << usersFile << std::endl;
+
+        sem_post(fileSem);
         sem_close(fileSem);
 
 
@@ -419,10 +806,16 @@ void RunServer(std::string coordIP, std::string coordPort, std::string port_no, 
     std::thread consumerThread([&rabbitMQ]()
                                {
         while (true) {
-            rabbitMQ.consumeUserLists();
-            rabbitMQ.consumeClientRelations();
-            rabbitMQ.consumeTimelines();
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            try {
+                rabbitMQ.consumeUserLists();
+                rabbitMQ.consumeClientRelations();
+                rabbitMQ.consumeTimelines();
+            } catch (const std::exception& e) {
+                std::cerr << "Exception in consumer thread: " << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "Unknown exception in consumer thread" << std::endl;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
             // you can modify this sleep period as per your choice
         } });
 
@@ -542,8 +935,8 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
     // TODO: begin synchronization process
     while (true)
     {
-        // the synchronizers sync files every 5 seconds
-        sleep(5);
+        // the synchronizers sync files every 2 seconds
+        sleep(2);
 
         grpc::ClientContext context;
         ServerList followerServers;
@@ -609,17 +1002,39 @@ std::vector<std::string> get_lines_from_file(std::string filename)
     std::vector<std::string> users;
     std::string user;
     std::ifstream file;
-    std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + filename;
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+
+    
+    std::string semName = makeSemaphoreName(filename);
+    
+    // Try to open with permissive permissions
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0666, 1);
+    if (fileSem == SEM_FAILED) {
+        perror("get_lines_from_file: sem_open failed");
+        return users;
+    }
+
+    auto cleanup = [&fileSem]() {
+        sem_post(fileSem);
+        sem_close(fileSem);
+    };
+    sem_wait(fileSem);
+
     file.open(filename);
+    if (!file.is_open()) {
+        std::cerr << "get_lines_from_file: could not open " << filename << std::endl;
+        cleanup();
+        return users; // return empty vector if file cannot be opened
+    }
+
     if (file.peek() == std::ifstream::traits_type::eof())
     {
         // return empty vector if empty file
         // std::cout<<"returned empty vector bc empty file"<<std::endl;
         file.close();
-        sem_close(fileSem);
+        cleanup();
         return users;
     }
+
     while (file)
     {
         getline(file, user);
@@ -629,7 +1044,7 @@ std::vector<std::string> get_lines_from_file(std::string filename)
     }
 
     file.close();
-    sem_close(fileSem);
+    cleanup();
 
     return users;
 }
@@ -663,16 +1078,23 @@ bool file_contains_user(std::string filename, std::string user)
 {
     std::vector<std::string> users;
     // check username is valid
-    std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + filename;
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+    std::string semName = makeSemaphoreName(filename);
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0666, 1);
+    if (fileSem == SEM_FAILED) {
+        perror("sem_open failed");
+        return false; // return false on semaphore error
+    }
+
     users = get_lines_from_file(filename);
-    for (int i = 0; i < users.size(); i++)
+    for (size_t i = 0; i < users.size(); i++)
     {
         // std::cout<<"Checking if "<<user<<" = "<<users[i]<<std::endl;
         if (user == users[i])
         {
             // std::cout<<"found"<<std::endl;
-            sem_close(fileSem);
+            if (fileSem != SEM_FAILED) {
+                sem_close(fileSem);
+            }
             return true;
         }
     }
@@ -723,6 +1145,8 @@ std::vector<std::string> get_tl_or_fl(int synchID, int clientID, bool tl)
         slave_fn.append("_followers.txt");
     }
 
+    std::cout << "Getting timeline/followers from files: " << master_fn << " and " << slave_fn << std::endl;
+
     std::vector<std::string> m = get_lines_from_file(master_fn);
     std::vector<std::string> s = get_lines_from_file(slave_fn);
 
@@ -745,8 +1169,9 @@ std::vector<std::string> getFollowersOfUser(int ID)
     for (auto userID : usersInCluster)
     { // Examine each user's following file
         // if 1 follows 2, 3, 4, there should be 2, 3, 4 in 1_follow_list.txt
-        std::string file = "cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + userID + "_follow_list.txt";
-        std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + userID + "_follow_list.txt";
+        // edit -  change follow_list to followers.txt
+        std::string file = "cluster/" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + userID + "_followers.txt";
+        std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + userID + "_followers.txt";
         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
         //std::cout << "Reading file " << file << std::endl;
         if (file_contains_user(file, clientID))
@@ -763,52 +1188,111 @@ std::vector<std::string> getFollowersOfUser(int ID)
 
 
 void notifyServersToReloadUsers(std::string clusterID, std::string clusterSubdirectory) {
-    std::string host = "localhost";
+    try {
+        std::string host = "localhost";
 
-    std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
+        std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
 
-    // time the RPC calls
-    std::cout << "Notifying server at " << host << ":" << port << " to reload user lists." << std::endl;
-    auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
-    std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
+        // time the RPC calls
+        std::cout << "Notifying server at " << host << ":" << port << " to reload user lists." << std::endl;
+        auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
+        std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
 
-    Empty req;
-    CoordConfirmation resp;
-    ClientContext context;
+        Empty req;
+        CoordConfirmation resp;
+        ClientContext context;
+        
+        // Add 2 second timeout to prevent blocking indefinitely
+        std::chrono::system_clock::time_point deadline = 
+            std::chrono::system_clock::now() + std::chrono::seconds(2);
+        context.set_deadline(deadline);
 
-    Status status = stub->ReloadAllUsers(&context, req, &resp);
+        Status status = stub->ReloadAllUsers(&context, req, &resp);
 
-    if (!status.ok()) {
-        log(ERROR, "ReloadAllUsers RPC failed: " + status.error_message());
-        std::cout << "ReloadAllUsers RPC failed: " << status.error_message() << std::endl;
-    } else {
-        log(INFO, "ReloadAllUsers RPC succeeded");
-        std::cout << "ReloadAllUsers RPC succeeded" << std::endl;
+        if (!status.ok()) {
+            log(ERROR, "ReloadAllUsers RPC failed: " + status.error_message());
+            std::cout << "ReloadAllUsers RPC failed: " << status.error_message() << std::endl;
+        } else {
+            log(INFO, "ReloadAllUsers RPC succeeded");
+            std::cout << "ReloadAllUsers RPC succeeded" << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in notifyServersToReloadUsers: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Unknown exception in notifyServersToReloadUsers" << std::endl;
     }
 
 }
 
 void notifyServersToReloadFollowers(std::string clusterID, std::string clusterSubdirectory){
-    std::string host = "localhost";
+    try {
+        std::string host = "localhost";
 
-    std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
+        std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
 
-    // time the RPC calls
-    std::cout << "Notifying server at " << host << ":" << port << " to reload follower relationships." << std::endl;
-    auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
-    std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
+        // time the RPC calls
+        std::cout << "Notifying server at " << host << ":" << port << " to reload follower relationships." << std::endl;
+        auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
+        std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
 
-    Empty req;
-    CoordConfirmation resp;
-    ClientContext context;
+        Empty req;
+        CoordConfirmation resp;
+        ClientContext context;
+        
+        // Add 2 second timeout to prevent blocking indefinitely
+        std::chrono::system_clock::time_point deadline = 
+            std::chrono::system_clock::now() + std::chrono::seconds(2);
+        context.set_deadline(deadline);
 
-    Status status = stub->ReloadAllFollowers(&context, req, &resp);
+        Status status = stub->ReloadAllFollowers(&context, req, &resp);
 
-    if (!status.ok()) {
-        log(ERROR, "ReloadAllFollowers RPC failed: " + status.error_message());
-        std::cout << "ReloadAllFollowers RPC failed: " << status.error_message() << std::endl;
-    } else {
-        log(INFO, "ReloadAllFollowers RPC succeeded");
-        std::cout << "ReloadAllFollowers RPC succeeded" << std::endl;
+        if (!status.ok()) {
+            log(ERROR, "ReloadAllFollowers RPC failed: " + status.error_message());
+            std::cout << "ReloadAllFollowers RPC failed: " << status.error_message() << std::endl;
+        } else {
+            log(INFO, "ReloadAllFollowers RPC succeeded");
+            std::cout << "ReloadAllFollowers RPC succeeded" << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in notifyServersToReloadFollowers: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Unknown exception in notifyServersToReloadFollowers" << std::endl;
+    }
+}
+
+void  notifyServersToReloadTimeline(std::string clusterID, std::string clusterSubdirectory){
+    try {
+        std::string host = "localhost";
+
+        std::string port = std::to_string( myMap[clusterID + "_" + clusterSubdirectory] );
+
+        // time the RPC calls
+        std::cout << "Notifying server at " << host << ":" << port << " to reload timelines." << std::endl;
+        auto channel = grpc::CreateChannel(host + ":" + port, grpc::InsecureChannelCredentials());
+        std::unique_ptr<SNSService::Stub> stub = SNSService::NewStub(channel);
+
+        Empty req;
+        CoordConfirmation resp;
+        ClientContext context;
+        
+        // Add 2 second timeout to prevent blocking indefinitely
+        std::chrono::system_clock::time_point deadline = 
+            std::chrono::system_clock::now() + std::chrono::seconds(2);
+        context.set_deadline(deadline);
+
+        Status status = stub->ReloadAllTimelines(&context, req, &resp);
+
+        if (!status.ok()) {
+            log(ERROR, "ReloadAllTimelines RPC failed: " + status.error_message());
+            std::cout << "ReloadAllTimelines RPC failed: " << status.error_message() << std::endl;
+        } else {
+            log(INFO, "ReloadAllTimelines RPC succeeded");
+            std::cout << "ReloadAllTimelines RPC succeeded" << std::endl;
+        }
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Exception in notifyServerToReloadTimeline: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "Unknown exception in notifyServerToReloadTimeline" << std::endl;
     }
 }

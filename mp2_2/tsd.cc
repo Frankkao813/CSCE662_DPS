@@ -48,6 +48,7 @@
 #include <grpc++/grpc++.h>
 #include<glog/logging.h>
 #include<thread>
+#include<optional>
 // #define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity); 
 
 #include "sns.grpc.pb.h"
@@ -187,9 +188,14 @@ bool append_to_file(const std::string& folder, const std::string& filename, cons
 }
 
 //TODO: implement this function
-std::vector<Message> recent_20_messages(std::string username, ServerConfig config){
+std::vector<Message> recent_20_messages(std::string username, ServerConfig config, std::optional<int> z = std::nullopt){
   // This has to be changed because the folder format has already changed.
   // std::string folder = "user";
+  if (z.has_value()) {
+      std::cout << "Server " << config.serverId << " received request for " << z.value() << " messages for user " << username <<  std::endl;
+      std::cout << "Server " << config.serverId << " returning " << z.value() / 3 << " messages for user " << username <<  "instead" << std::endl;
+  }
+
   std::string basefolder = "./cluster/" + config.clusterId + "/" + config.serverId + "/";
   std::string filename = username + "_following.txt";
   std::string full_path = basefolder + "/" + filename;
@@ -236,12 +242,18 @@ std::vector<Message> recent_20_messages(std::string username, ServerConfig confi
     messages.push_back(m);
   }
 
-  // I reverse the array and then take the last 20
+  // I reverse the array and then take the last 20 (or z if specified)
   std::reverse(messages.begin(), messages.end());
-  // take into account the number of messages in the vector
-  int num_consider = std::min<size_t>(20, messages.size());
-  std::vector<Message> newest_20_messages(messages.begin(), messages.begin() + num_consider);
-  return newest_20_messages;
+  
+  // If z is specified, return the z newest messages; otherwise return 20
+  int num_consider = z.has_value() ? std::min<size_t>(z.value(), messages.size()) 
+                                    : std::min<size_t>(20, messages.size());
+  std::vector<Message> newest_messages(messages.begin(), messages.begin() + num_consider);
+
+  if (z.has_value()) {
+      std::cout << "Server returning " << newest_messages.size() << " messages for user " << username << std::endl;
+  }
+  return newest_messages;
 
 }
 
@@ -341,6 +353,15 @@ class SNSServiceImpl final : public SNSService::Service {
 
     std::string uname = request -> username();
     std::string target = request -> arguments(0);
+    
+    std::cout << "Follow RPC: user '" << uname << "' wants to follow '" << target << "'" << std::endl;
+    std::cout << "Current client_db size: " << client_db.size() << std::endl;
+    std::cout << "Users in client_db: ";
+    for (auto* c : client_db) {
+        std::cout << c->username << " ";
+    }
+    std::cout << std::endl;
+    
     // Failure: A person can't follow himself
     if (uname == target) {
       reply -> set_msg("A person can't follow himself.");
@@ -348,29 +369,55 @@ class SNSServiceImpl final : public SNSService::Service {
     }
 
     // Failure: A person can't follow non-existent person
-    if (findClientByName(target) == nullptr){
+    Client* target_client = findClientByName(target);
+    if (target_client == nullptr){
+      std::cout << "ERROR: Target user '" << target << "' not found in client_db" << std::endl;
       reply -> set_msg("Following non-existent user.");
       return Status::OK;
     }
 
     // handle duplicate push cade
     Client* c1 = findClientByName(uname);
-    Client* c2 = findClientByName(target);
+    if (c1 == nullptr) {
+      std::cout << "ERROR: Requesting user '" << uname << "' not found in client_db" << std::endl;
+      reply -> set_msg("Requesting user does not exist.");
+      return Status::OK;
+    }
+    
+    Client* c2 = target_client;
+    
+    std::cout << "c1=" << (c1 ? c1->username : "NULL") << ", c2=" << (c2 ? c2->username : "NULL") << std::endl;
+    
+    bool needsFileWrite = false;  // Track if we need to write to file
+    
     if (c1 != nullptr && c2 != nullptr){
         //  bool isInVector(const std::vector<Client*>& v, const Client* who)
-        // both should be false
+        // both should be false for a new follow
         bool c1_in_c2_follower = isInVector(c2 -> client_followers, c1); 
         bool c2_in_c1_following = isInVector(c1 -> client_following, c2);
-        // std::cout << "c1_in_c2_follower: " << c1_in_c2_follower << std::endl;
-        // std::cout << "c2_in_c1_follower: " << c2_in_c1_following << std::endl;
-        if (!c1_in_c2_follower && !c2_in_c1_following){
-          c1 -> client_following.push_back(c2);
-          c2 -> client_followers.push_back(c1);
-        }
-        else {
+        std::cout << "c1_in_c2_follower=" << c1_in_c2_follower << ", c2_in_c1_following=" << c2_in_c1_following << std::endl;
+        
+        // If BOTH sides already exist, relationship is complete
+        if (c1_in_c2_follower && c2_in_c1_following){
+          std::cout << "Already followed - returning" << std::endl;
           reply ->set_msg("Already followed.");
           return Status::OK;
         }
+        
+        // Otherwise, ensure both sides exist (fixes partial relationships)
+        if (!c2_in_c1_following) {
+          std::cout << "Adding c2 to c1's following list..." << std::endl;
+          c1 -> client_following.push_back(c2);
+        }
+        if (!c1_in_c2_follower) {
+          std::cout << "Adding c1 to c2's followers list..." << std::endl;
+          c2 -> client_followers.push_back(c1);
+          needsFileWrite = true;  // Only write if we added to followers
+        }
+    } else {
+        std::cout << "ERROR: Unexpected null pointer after validation!" << std::endl;
+        reply->set_msg("Internal error");
+        return Status::OK;
     }
 
     // see that if the relationship is saved
@@ -385,19 +432,23 @@ class SNSServiceImpl final : public SNSService::Service {
     }
     std::cout << std::endl;
 
+    std::cout << "SUCCESS: Follow relationship created successfully" << std::endl;
     reply -> set_msg("Follow successful");
-    // write to file
-    try {
-      std::string server_folder = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/";
-      std::cout << server_folder << std::endl;
-      std::filesystem::create_directories(server_folder);
-      std::string user_file = server_folder + uname + "_follow_list.txt";
-      std::ofstream out(user_file, std::ios::app);
-      if (out) {
-        out << target << "\n"; // the username is written in the file
+    
+    // write to file ONLY if we actually added to the followers list
+    if (needsFileWrite) {
+      try {
+        std::string server_folder = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/";
+        std::cout << server_folder << std::endl;
+        std::filesystem::create_directories(server_folder);
+        std::string user_file = server_folder + target + "_followers.txt";
+        std::ofstream out(user_file, std::ios::app);
+        if (out) {
+          out << uname << "\n"; // the username is written in the file
+        }
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "Failed to write user file: " << e.what();
       }
-    } catch (const std::exception& e) {
-      LOG(ERROR) << "Failed to write user file: " << e.what();
     }
 
 
@@ -597,43 +648,46 @@ class SNSServiceImpl final : public SNSService::Service {
     std::cout << "ReloadAllUsers called" << std::endl;
 
     // named semaphore
-    std::string semName = "/" + server_config_.serverId + "_" + server_config_.clusterId + "_" + "all_users.txt";
+    std::string semName = "/" + server_config_.clusterId + "_" + server_config_.serverId + "_" + "all_users.txt";
     std::string filename = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/" + "all_users.txt";
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0666, 1);
 
-    // lock the file
-    if (fileSem) {
-        sem_wait(fileSem);
+    if (fileSem == SEM_FAILED) {
+        std::cerr << "ReloadAllUsers: Failed to open semaphore" << std::endl;
+        return Status::OK;
     }
+
+    // Lock before reading file
+    sem_wait(fileSem);
 
     std::string content = read_file(filename);
     std::vector<std::string> lines = split_lines(content);
-    std::cout << "There are " << lines.size() << " users in the reloaded file." << std::endl;
-    // see how many users are already in the client_db
-    int existing_users = client_db.size();
-    if (lines.size() <= existing_users) {
-      std::cout << "No new users to reload." << std::endl;
-
+    
+    // Filter out empty lines
+    std::vector<std::string> filtered_lines;
+    for (const auto& line : lines) {
+        if (!line.empty()) {
+            filtered_lines.push_back(line);
+        }
     }
-    else {
-      // Lock the semaphore before file operation
-
-      for (size_t i = existing_users; i < lines.size(); ++i) {
-        const std::string& uname = lines[i];
+    lines = filtered_lines;
+    
+    std::cout << "There are " << lines.size() << " users in the reloaded file." << std::endl;
+    
+    // Reload ALL users from file, not just new ones
+    for (const std::string& uname : lines) {
         // Check if user already exists to avoid duplicates
         if (findClientByName(uname) == nullptr) {
-          Client* newClient = new Client();
-          newClient->username = uname;
-          client_db.push_back(newClient);
-          std::cout << "Reloaded user: " << uname << std::endl;
+            Client* newClient = new Client();
+            newClient->username = uname;
+            client_db.push_back(newClient);
+            std::cout << "Reloaded user: " << uname << std::endl;
         }
-      }
-
-      // Unlock the semaphore after file operation
-      if (fileSem) {
-        sem_post(fileSem);
-      }
     }
+
+    // Unlock the semaphore after file operation
+    sem_post(fileSem);
+    sem_close(fileSem);
 
     // search the client_db to avoid duplicate entries
 
@@ -647,14 +701,17 @@ class SNSServiceImpl final : public SNSService::Service {
   Status ReloadAllFollowers(ServerContext* context, const Empty* request, CoordConfirmation* reply) override {
     std::cout << "ReloadFollowers called" << std::endl;
 
-    // named semaphore
-    std::string semName = "/" + server_config_.serverId + "_" + server_config_.clusterId + "_" + "followers.txt";
-    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+    // named semaphore - match synchronizer naming: clusterID_subdirectory_filename
+    std::string semName = "/" + server_config_.clusterId + "_" + server_config_.serverId + "_" + "followers.txt";
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT, 0666, 1);
+
+    if (fileSem == SEM_FAILED) {
+        std::cerr << "ReloadAllFollowers: Failed to open semaphore" << std::endl;
+        return Status::OK;
+    }
 
     // lock the file
-    if (fileSem) {
-        sem_wait(fileSem);
-    }
+    sem_wait(fileSem);
 
     // for each client, reload its follower list
     // find the client in client_db first
@@ -679,15 +736,54 @@ class SNSServiceImpl final : public SNSService::Service {
     }
 
     // unlock the file
-    if (fileSem) {
-        sem_post(fileSem);
-    }
+    sem_post(fileSem);
+    sem_close(fileSem);
 
     std::cout << "[server " << server_config_.serverId
               << "] ReloadFollowers EXIT" << std::endl;
 
     return Status::OK;
   }
+
+    Status ReloadAllTimelines(ServerContext* context, const Empty* request, CoordConfirmation* reply) override {
+      std::cout << "ReloadAllTimelines called" << std::endl;
+      // If we detect that there is new posts in _following.txt
+      std::string clientId = server_config_.clusterId;
+      std::string filename = "./cluster/" + server_config_.clusterId + "/" + server_config_.serverId + "/" + clientId + "_following.txt";
+      // 
+      std::cout << "reading from "    << filename << std::endl;
+      std::string content = read_file(filename);
+      std::vector<std::string> lines = split_lines(content);
+      int file_size = lines.size();
+      std::cout << "At the current file " << filename << " the file size is " <<  file_size << std::endl;
+      Client* c = findClientByName(clientId);
+      if (file_size > c->following_file_size) {
+        // there are new posts
+        int old_size = c->following_file_size;
+        c->following_file_size = file_size;
+        
+        // Each message is 3 lines (T, U, W) since split_lines filters blank lines
+        int new_lines = file_size - old_size;
+        int new_message_count = new_lines / 3;
+        
+        std::cout << "Detected " << new_message_count << " new messages for user " 
+                  << clientId << " (" << new_lines << " new lines)" << std::endl;
+        
+        // I need to only read the new posts and push to timeline
+        std::vector<Message> recent_msgs = recent_20_messages(clientId, server_config_, new_message_count);
+        // push the result back to people
+        if (c -> stream){
+          std::cout << "Pushing " << recent_msgs.size() << " new messages to user " << clientId << std::endl;
+          for (auto msg:recent_msgs){
+            c->stream->Write(msg);
+          }
+        }
+
+      }
+
+      return Status::OK;
+    
+    }
 
    private:
     ServerConfig server_config_;
@@ -867,7 +963,12 @@ std::vector<std::string> split_lines(const std::string& text) {
     std::string line;
 
     while (std::getline(ss, line)) {
-        lines.push_back(line);
+        // Trim whitespace and skip empty lines
+        line.erase(0, line.find_first_not_of(" \t\r\n"));
+        line.erase(line.find_last_not_of(" \t\r\n") + 1);
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
     }
     return lines;
 }
